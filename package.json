@@ -1,0 +1,88 @@
+{
+  "name": "brightspace-mcp-server",
+  "version": "3.6.1",
+  "mcpName": "io.github.rohanmuppa/brightspace",
+  "description": "MCP server for Brightspace (D2L). Check grades, due dates, assignments, announcements, syllabus, rosters and more via Claude, ChatGPT, Cursor, Windsurf, or any MCP client.",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "brightspace-mcp-server": "build/index.js",
+    "brightspace-auth": "build/auth-cli.js",
+    "brightspace-setup": "build/setup.js"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "start": "node build/index.js",
+    "auth": "node build/auth-cli.js",
+    "update": "node build/update.js",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "postinstall": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@napi-rs/keyring": "^2.0.0",
+    "dotenv": "^17.2.4",
+    "file-type": "^21.3.0",
+    "playwright": "^1.58.2",
+    "sanitize-filename": "^1.6.3",
+    "trash": "^10.1.1",
+    "turndown": "^7.2.2",
+    "unpdf": "^1.4.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/sanitize-filename": "^1.1.28",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "author": "Rohan Muppa",
+  "homepage": "https://github.com/RohanMuppa/brightspace-mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RohanMuppa/brightspace-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RohanMuppa/brightspace-mcp-server/issues"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "brightspace",
+    "d2l",
+    "lms",
+    "education",
+    "grades",
+    "courses",
+    "claude",
+    "chatgpt",
+    "cursor",
+    "windsurf",
+    "purdue",
+    "university",
+    "model-context-protocol",
+    "brightspace-api",
+    "d2l-api",
+    "assignments",
+    "announcements",
+    "syllabus",
+    "student",
+    "ai",
+    "duo",
+    "sso",
+    "d2l-brightspace"
+  ]
+}
