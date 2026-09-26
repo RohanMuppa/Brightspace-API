@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchCourseAssignments } from "../../src/tools/get-assignments.js";
+import { fetchCourseAssignments, getAssignments } from "../../src/features/assignments.js";
+import type { FeatureContext } from "../../src/features/context.js";
+import type { AppConfig } from "../../src/types/index.js";
 
 /**
  * fetchCourseAssignments takes baseUrl as an optional trailing argument so the
@@ -333,11 +335,8 @@ describe("fetchCourseAssignments quiz mapping", () => {
  * The all-courses path reads the enrollment list itself. myenrollments is
  * bookmark-paged and its isActive filter is server-side, so the list has to be
  * followed to its last page and queried according to the configured
- * activeOnly policy — the same two rules get_my_courses already follows.
+ * activeOnly policy — the same two rules getMyCourses already follows.
  */
-
-import { registerGetAssignments } from "../../src/tools/get-assignments.js";
-import type { AppConfig } from "../../src/types/index.js";
 
 const COURSE_A = { Id: 101, Name: "CS 180", Code: "cs180" };
 const COURSE_B = { Id: 202, Name: "MA 261", Code: "ma261" };
@@ -357,10 +356,10 @@ function allCoursesConfig(activeOnly: boolean): AppConfig {
   } as AppConfig;
 }
 
-/** Registers the tool over a responder and records every requested path. */
-function setupTool(respond: (path: string) => unknown, config: AppConfig) {
+/** Builds a fake FeatureContext over a responder, recording every requested path. */
+function setupContext(respond: (path: string) => unknown, config: AppConfig) {
   const requested: string[] = [];
-  const apiClient = {
+  const api = {
     lp: (p: string) => `/d2l/api/lp/1.0${p}`,
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (path: string) => {
@@ -368,16 +367,8 @@ function setupTool(respond: (path: string) => unknown, config: AppConfig) {
       return respond(path);
     }),
   };
-
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_n: string, _m: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerGetAssignments(server as any, apiClient as any, config);
-  return { call: (args: unknown) => handler!(args), requested };
+  const ctx = { api, config, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, requested };
 }
 
 /** One dropbox folder per course, named after it; everything else is empty. */
@@ -391,11 +382,9 @@ const courseWork = (path: string): unknown => {
   throw notFound();
 };
 
-const body = (result: any) => JSON.parse(result.content[0].text);
-
-describe("get_assignments across all courses", () => {
+describe("getAssignments across all courses", () => {
   it("follows the enrollment bookmark chain instead of stopping at page one", async () => {
-    const { call, requested } = setupTool((path) => {
+    const { ctx, requested } = setupContext((path) => {
       if (path.includes("/enrollments/")) {
         return path.includes("bookmark=")
           ? { Items: [enrollmentItem(COURSE_B)], PagingInfo: { HasMoreItems: false } }
@@ -404,13 +393,14 @@ describe("get_assignments across all courses", () => {
       return courseWork(path);
     }, allCoursesConfig(true));
 
-    const { courses } = body(await call({}));
-    expect(courses.map((c: any) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
     expect(requested.filter((p) => p.includes("/enrollments/"))).toHaveLength(2);
   });
 
   it("drops isActive=true from the query when activeOnly is off", async () => {
-    const { call, requested } = setupTool((path) => {
+    const { ctx, requested } = setupContext((path) => {
       if (path.includes("/enrollments/")) {
         // D2L filters server-side, so isActive=true really does hide COURSE_B.
         return {
@@ -422,18 +412,179 @@ describe("get_assignments across all courses", () => {
       return courseWork(path);
     }, allCoursesConfig(false));
 
-    const { courses } = body(await call({}));
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
     expect(requested[0]).not.toContain("isActive=true");
-    expect(courses.map((c: any) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
   });
 
   it("still asks only for active enrollments under the default policy", async () => {
-    const { call, requested } = setupTool((path) => {
+    const { ctx, requested } = setupContext((path) => {
       if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A)] };
       return courseWork(path);
     }, allCoursesConfig(true));
 
-    await call({});
+    await getAssignments(ctx);
     expect(requested[0]).toContain("isActive=true");
+  });
+});
+
+/**
+ * Gradebook heads-up rows.
+ *
+ * A course's gradebook carries columns for work that the student's own
+ * dropbox and quiz listings cannot see: a proctored midterm, a participation
+ * score, an exam administered outside Brightspace. Those columns are the only
+ * evidence such work exists, so they are surfaced as items of their own.
+ *
+ * Two rules decide which columns qualify:
+ *   1. Student-scored types only (1 numeric, 2 passfail, 3 selectbox, 4 text).
+ *      The bookkeeping types (category, calculated, formula, final) describe
+ *      the gradebook's own arithmetic, not work anybody owes.
+ *   2. The column must match no already-fetched assignment or quiz, compared
+ *      on AssociatedTool.ToolItemId. A linked column whose tool item WAS
+ *      fetched is a duplicate; a linked column whose tool item was not is
+ *      exactly the case this exists for.
+ */
+
+const FOLDER = { Id: 55, Name: "HW 1", DueDate: null, IsHidden: false, GroupTypeId: null };
+const QUIZ = { QuizId: 66, Name: "Quiz 1", IsActive: true };
+
+/**
+ * @param columns the gradebook payload, a bare array in D2L's own shape
+ */
+function makeGradebookClient(columns: unknown) {
+  return {
+    le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
+    get: vi.fn(async (path: string) => {
+      if (path.endsWith("/dropbox/folders/")) return [FOLDER];
+      if (path.endsWith("/quizzes/")) return { Objects: [QUIZ] };
+      if (path.endsWith("/grades/")) {
+        if (columns instanceof Error) throw columns;
+        return columns;
+      }
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    }),
+  };
+}
+
+const headsUp = (items: any[]) => items.filter((i) => i.type === "gradeOnly");
+
+describe("gradebook heads-up rows", () => {
+  it("surfaces a student-scored column that matches no fetched item", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([
+        { Id: 900, Name: "Midterm Exam", GradeObjectTypeId: 1, AssociatedTool: null },
+      ]) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items)).toEqual([
+      {
+        type: "gradeOnly",
+        id: 900,
+        name: "Midterm Exam",
+        dueDate: null,
+        url: `${BASE}/d2l/lms/grades/my_grades/main.d2l?ou=${COURSE_ID}`,
+      },
+    ]);
+  });
+
+  it("drops a column already covered by a fetched quiz or assignment", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([
+        { Id: 901, Name: "Quiz 1", GradeObjectTypeId: 1, AssociatedTool: { ToolItemId: 66 } },
+        { Id: 902, Name: "HW 1", GradeObjectTypeId: 1, AssociatedTool: { ToolItemId: 55 } },
+      ]) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items)).toEqual([]);
+  });
+
+  it("keeps a linked column whose tool item was never fetched", async () => {
+    // The whole point: a released midterm's column IS linked, to a quiz the
+    // student's own quizzes/ call cannot see.
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([
+        { Id: 903, Name: "Proctored Final", GradeObjectTypeId: 1, AssociatedTool: { ToolItemId: 7777 } },
+      ]) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items).map((i) => i.name)).toEqual(["Proctored Final"]);
+  });
+
+  it("keeps every student-scored type and no bookkeeping type", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([
+        { Id: 1, Name: "numeric", GradeObjectTypeId: 1 },
+        { Id: 2, Name: "passfail", GradeObjectTypeId: 2 },
+        { Id: 3, Name: "selectbox", GradeObjectTypeId: 3 },
+        { Id: 4, Name: "text", GradeObjectTypeId: 4 },
+        { Id: 5, Name: "category", GradeObjectTypeId: 5 },
+        { Id: 6, Name: "calculated", GradeObjectTypeId: 6 },
+        { Id: 7, Name: "formula", GradeObjectTypeId: 7 },
+        { Id: 8, Name: "final", GradeObjectTypeId: 8 },
+      ]) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items).map((i) => i.name)).toEqual([
+      "numeric",
+      "passfail",
+      "selectbox",
+      "text",
+    ]);
+  });
+
+  it("skips a nameless or id-less column without losing its siblings", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([
+        { Name: "no id", GradeObjectTypeId: 1 },
+        { Id: 905, GradeObjectTypeId: 1 },
+        { Id: 906, Name: "Attendance", GradeObjectTypeId: 2 },
+      ]) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items).map((i) => i.name)).toEqual(["Attendance"]);
+  });
+
+  it("carries a null url when no baseUrl was supplied", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient([{ Id: 907, Name: "Participation", GradeObjectTypeId: 1 }]) as any,
+      COURSE_ID
+    );
+
+    expect(headsUp(items)[0].url).toBeNull();
+  });
+
+  it("a failing gradebook costs only its own rows", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient(Object.assign(new Error("Forbidden"), { status: 403 })) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items)).toEqual([]);
+    // The assignments and quizzes that did answer are untouched.
+    expect(items.map((i) => i.type)).toEqual(["assignment", "quiz"]);
+  });
+
+  it("tolerates a gradebook that is not an array", async () => {
+    const items = await fetchCourseAssignments(
+      makeGradebookClient({ Objects: "not a list" }) as any,
+      COURSE_ID,
+      BASE
+    );
+
+    expect(headsUp(items)).toEqual([]);
+    expect(items).toHaveLength(2);
   });
 });

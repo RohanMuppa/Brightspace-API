@@ -1,19 +1,107 @@
 /**
- * Purdue Brightspace MCP Server
+ * Brightspace API
  * Copyright (c) 2026 Rohan Muppa. All rights reserved.
  * Licensed under MIT — see LICENSE file for details.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { z } from "zod";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { fetchAllItems } from "../api/paginate.js";
-import { GetAssignmentsSchema } from "../features/schemas.js";
-import { toolResponse, sanitizeError } from "./tool-helpers.js";
+import { GetAssignmentsSchema } from "./schemas.js";
+import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { log } from "../utils/logger.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import { assignmentUrl, gradebookUrl, quizUrl } from "../utils/deep-links.js";
-import type { AppConfig } from "../types/index.js";
+
+export type GetAssignmentsArgs = z.input<typeof GetAssignmentsSchema>;
+
+export interface AssignmentRubricLevel {
+  name: string;
+  points: number;
+  description: string | null;
+}
+
+export interface AssignmentRubricCriterion {
+  name: string;
+  levels: AssignmentRubricLevel[];
+}
+
+export interface AssignmentRubric {
+  name: string;
+  criteria: AssignmentRubricCriterion[];
+}
+
+export interface AssignmentSubmissionFile {
+  name: string;
+  size: number;
+  fileId: number;
+}
+
+export interface AssignmentSubmission {
+  submittedDate: string;
+  files: AssignmentSubmissionFile[];
+  comment: string | null;
+}
+
+export interface AssignmentFeedback {
+  score: number | null;
+  feedback: string | null;
+}
+
+export interface DropboxAssignmentItem {
+  type: "assignment";
+  id: number;
+  name: string;
+  url: string | null;
+  instructions: string;
+  dueDate: string | null;
+  points: number | null;
+  isGroup: boolean;
+  rubric: AssignmentRubric[] | null;
+  submission: AssignmentSubmission | null;
+  feedback: AssignmentFeedback | null;
+}
+
+export interface QuizAssignmentItem {
+  type: "quiz";
+  id: number;
+  name: string;
+  url: string | null;
+  instructions: string;
+  dueDate: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  timeLimit: number | null;
+  attemptsAllowed: number | "Unlimited" | null;
+  attemptsAvailable: boolean;
+  attemptsUsed: number | null;
+  attemptsRemaining: number | string | null;
+  attemptWarning: string | null;
+  bestScore: number | null;
+  gracePeriodMinutes: number | null;
+  hasPassword: boolean;
+}
+
+export interface GradeOnlyAssignmentItem {
+  type: "gradeOnly";
+  id: number;
+  name: string;
+  dueDate: null;
+  url: string | null;
+}
+
+export type AssignmentItem = DropboxAssignmentItem | QuizAssignmentItem | GradeOnlyAssignmentItem;
+
+export interface CourseAssignments {
+  courseId: number;
+  courseName: string;
+  assignments: AssignmentItem[];
+}
+
+export type AssignmentsResult =
+  | { courseId: number; assignments: AssignmentItem[] }
+  | { courses: CourseAssignments[] };
 
 // D2L Dropbox API types
 interface DropboxFolder {
@@ -244,7 +332,7 @@ async function recoverContentQuizzes(
 }
 
 /**
- * Fetch assignments (dropbox + quizzes) for a single course
+ * Fetch assignments (dropbox + quizzes) for a single course.
  *
  * baseUrl is optional: without it the items carry a null url.
  */
@@ -252,8 +340,8 @@ export async function fetchCourseAssignments(
   apiClient: D2LApiClient,
   courseId: number,
   baseUrl?: string
-): Promise<any[]> {
-  const assignments: any[] = [];
+): Promise<AssignmentItem[]> {
+  const assignments: AssignmentItem[] = [];
 
   // Fetch dropbox folders, quizzes, and the gradebook in parallel. The
   // gradebook is fetched alongside them but read last: a heads-up row is a
@@ -316,7 +404,7 @@ export async function fetchCourseAssignments(
       }
 
       // Build assignment object
-      const assignment = {
+      const assignment: DropboxAssignmentItem = {
         type: "assignment",
         id: folder.Id,
         name: folder.Name,
@@ -449,7 +537,7 @@ export async function fetchCourseAssignments(
       const descriptionHtml = richTextHtml(quiz.Description);
 
       // Build quiz object
-      const quizAssignment = {
+      const quizAssignment: QuizAssignmentItem = {
         type: "quiz",
         id: quiz.QuizId,
         name: quiz.Name,
@@ -507,17 +595,17 @@ export async function fetchCourseAssignments(
  */
 function gradebookHeadsUp(
   raw: unknown,
-  fetched: any[],
+  fetched: AssignmentItem[],
   courseId: number,
   baseUrl?: string
-): any[] {
+): GradeOnlyAssignmentItem[] {
   if (!Array.isArray(raw)) return [];
 
   const covered = new Set(
     fetched.map((item) => item.id).filter((id) => typeof id === "number")
   );
 
-  const rows: any[] = [];
+  const rows: GradeOnlyAssignmentItem[] = [];
   for (const column of raw as GradeObject[]) {
     if (!STUDENT_SCORED.has(column?.GradeObjectTypeId as number)) continue;
     if (covered.has(column.AssociatedTool?.ToolItemId as number)) continue;
@@ -537,110 +625,69 @@ function gradebookHeadsUp(
 }
 
 /**
- * Register get_assignments tool
+ * Assignments and quizzes for one course, or for every enrolled course when
+ * courseId is omitted (subject to the configured course filter, the same
+ * policy getMyCourses applies).
  */
-export function registerGetAssignments(
-  server: McpServer,
-  apiClient: D2LApiClient,
-  config: AppConfig
-): void {
-  server.registerTool(
-    "get_assignments",
-    {
-      title: "Get Assignments",
-      description:
-        "Fetch assignments and quizzes for a specific course or all enrolled courses. Shows dropbox submissions and quizzes with due dates, status, and rubric info. Use this when the user asks about assignments, homework, what to submit, quizzes, or assignment details and rubrics.",
-      inputSchema: GetAssignmentsSchema,
-    },
-    async (args: any) => {
-      try {
-        log("DEBUG", "get_assignments tool called", { args });
+export async function getAssignments(
+  ctx: FeatureContext,
+  args: GetAssignmentsArgs = {}
+): Promise<AssignmentsResult> {
+  const { courseId } = GetAssignmentsSchema.parse(args);
 
-        // Parse and validate input
-        const { courseId } = GetAssignmentsSchema.parse(args);
+  if (courseId) {
+    const assignments = await fetchCourseAssignments(ctx.api, courseId, ctx.config.baseUrl);
+    log("INFO", `getAssignments: Retrieved ${assignments.length} assignments for course ${courseId}`);
+    return { courseId, assignments };
+  }
 
-        // Single course case
-        if (courseId) {
-          const assignments = await fetchCourseAssignments(apiClient, courseId, config.baseUrl);
-
-          log("INFO", `get_assignments: Retrieved ${assignments.length} assignments for course ${courseId}`);
-          return toolResponse({ courseId, assignments });
-        }
-
-        // All courses case
-        // First, fetch enrolled courses. isActive=true is the configured
-        // policy, not a constant: with activeOnly off the user asked to see
-        // past courses, and the server would otherwise drop them before
-        // applyCourseFilter ever saw them.
-        const enrollmentPath = apiClient.lp(
-          `/enrollments/myenrollments/?orgUnitTypeId=3${
-            config.courseFilter.activeOnly ? "&isActive=true" : ""
-          }`
-        );
-        // myenrollments is bookmark-paged; reading only the first page hides
-        // every course past it, and with it every assignment they carry.
-        const enrollmentItems = await fetchAllItems<EnrollmentItem>(
-          apiClient,
-          enrollmentPath,
-          { ttl: DEFAULT_CACHE_TTLS.enrollments }
-        );
-
-        // Apply course filter
-        const filteredEnrollments = applyCourseFilter(
-          enrollmentItems.map(item => ({
-            id: item.OrgUnit.Id,
-            name: item.OrgUnit.Name,
-            code: item.OrgUnit.Code,
-            isActive: item.Access.IsActive,
-            canAccess: item.Access.CanAccess,
-            ...item,
-          })),
-          config.courseFilter
-        );
-
-        // Fetch assignments for each course (handle 403s gracefully)
-        const assignmentPromises = filteredEnrollments.map(async (item) => {
-          try {
-            const assignments = await fetchCourseAssignments(apiClient, item.OrgUnit.Id, config.baseUrl);
-
-            return {
-              courseId: item.OrgUnit.Id,
-              courseName: item.OrgUnit.Name,
-              assignments,
-            };
-          } catch (error: any) {
-            // 403 means no access (past course, etc) - log and skip
-            if (error?.status === 403) {
-              log(
-                "DEBUG",
-                `get_assignments: 403 Forbidden for course ${item.OrgUnit.Id} (${item.OrgUnit.Name}) - skipping`
-              );
-              return null;
-            }
-            throw error; // Re-throw other errors
-          }
-        });
-
-        const results = await Promise.allSettled(assignmentPromises);
-        const courses = results
-          .filter(
-            (r): r is PromiseFulfilledResult<any> =>
-              r.status === "fulfilled" && r.value !== null
-          )
-          .map((r) => r.value);
-
-        log(
-          "INFO",
-          `get_assignments: Retrieved assignments for ${courses.length} courses (out of ${enrollmentItems.length} enrolled)`
-        );
-        return toolResponse({ courses });
-      } catch (error) {
-        // Temporary: log full error details to stderr for debugging
-        if (error instanceof Error) {
-          log("ERROR", `get_assignments failed: ${error.message}\n${error.stack}`);
-        }
-        return sanitizeError(error);
-      }
-    }
+  // isActive=true is the configured policy, not a constant: with activeOnly
+  // off the caller asked to see past courses, and the server would otherwise
+  // drop them before applyCourseFilter ever saw them.
+  const enrollmentPath = ctx.api.lp(
+    `/enrollments/myenrollments/?orgUnitTypeId=3${ctx.config.courseFilter.activeOnly ? "&isActive=true" : ""}`
   );
+  // myenrollments is bookmark-paged; reading only the first page hides every
+  // course past it, and with it every assignment they carry.
+  const enrollmentItems = await fetchAllItems<EnrollmentItem>(ctx.api, enrollmentPath, {
+    ttl: DEFAULT_CACHE_TTLS.enrollments,
+  });
+
+  const filteredEnrollments = applyCourseFilter(
+    enrollmentItems.map((item) => ({
+      id: item.OrgUnit.Id,
+      name: item.OrgUnit.Name,
+      code: item.OrgUnit.Code,
+      isActive: item.Access.IsActive,
+      canAccess: item.Access.CanAccess,
+      ...item,
+    })),
+    ctx.config.courseFilter
+  );
+
+  // Fetch assignments for each course (handle 403s gracefully)
+  const assignmentPromises = filteredEnrollments.map(async (item) => {
+    try {
+      const assignments = await fetchCourseAssignments(ctx.api, item.OrgUnit.Id, ctx.config.baseUrl);
+      return { courseId: item.OrgUnit.Id, courseName: item.OrgUnit.Name, assignments };
+    } catch (error: any) {
+      // 403 means no access (past course, etc) - log and skip
+      if (error?.status === 403) {
+        log("DEBUG", `getAssignments: 403 Forbidden for course ${item.OrgUnit.Id} (${item.OrgUnit.Name}) - skipping`);
+        return null;
+      }
+      throw error; // Re-throw other errors
+    }
+  });
+
+  const results = await Promise.allSettled(assignmentPromises);
+  const courses = results
+    .filter((r): r is PromiseFulfilledResult<CourseAssignments | null> => r.status === "fulfilled" && r.value !== null)
+    .map((r) => r.value as CourseAssignments);
+
+  log(
+    "INFO",
+    `getAssignments: Retrieved assignments for ${courses.length} courses (out of ${enrollmentItems.length} enrolled)`
+  );
+  return { courses };
 }
