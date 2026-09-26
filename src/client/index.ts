@@ -26,6 +26,10 @@ import { getDiscussions, type GetDiscussionsArgs, type DiscussionsResult } from 
 import { getRoster, type GetRosterArgs, type RosterResult } from "../features/roster.js";
 import { getClasslistEmails, type GetClasslistEmailsArgs, type ClasslistEmailsResult } from "../features/classlist-emails.js";
 import { getVideoTranscript, type GetVideoTranscriptArgs, type VideoTranscriptResult } from "../features/transcript.js";
+import { getAnnouncements, type GetAnnouncementsArgs, type Announcement, type AnnouncementsFiltered } from "../features/announcements.js";
+import { getAnnouncementFiles, type GetAnnouncementFilesArgs, type AnnouncementFilesResult } from "../features/announcement-files.js";
+import { getCourseContent, type GetCourseContentArgs, type CourseContentResult } from "../features/content.js";
+import { getSyllabus, type GetSyllabusArgs, type SyllabusResult } from "../features/syllabus.js";
 import type { Course, GetMyCoursesArgs } from "../features/courses.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -166,5 +170,19 @@ export class BrightspaceClient {
     return this.run(getInfo, undefined);
   }
 
-  // ── #7 adds getAnnouncements, getAnnouncementFiles, getCourseContent, getSyllabus here ──
+  getAnnouncements(args?: GetAnnouncementsArgs): Promise<Announcement[] | AnnouncementsFiltered> {
+    return this.run(getAnnouncements, args);
+  }
+
+  getAnnouncementFiles(args: GetAnnouncementFilesArgs): Promise<AnnouncementFilesResult> {
+    return this.run(getAnnouncementFiles, args);
+  }
+
+  getCourseContent(args: GetCourseContentArgs): Promise<CourseContentResult> {
+    return this.run(getCourseContent, args);
+  }
+
+  getSyllabus(args: GetSyllabusArgs): Promise<SyllabusResult> {
+    return this.run(getSyllabus, args);
+  }
 }

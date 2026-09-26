@@ -56,3 +56,12 @@ export type {
   VideoTranscriptAvailable,
   VideoTranscriptResult,
 } from "./features/transcript.js";
+export type { GetAnnouncementsArgs, Announcement, AnnouncementsFiltered } from "./features/announcements.js";
+export type {
+  GetAnnouncementFilesArgs,
+  AnnouncementAttachmentInfo,
+  AnnouncementFileListing,
+  AnnouncementFilesResult,
+} from "./features/announcement-files.js";
+export type { GetCourseContentArgs, ContentModule, ContentTopic, ContentNode, CourseContentResult } from "./features/content.js";
+export type { GetSyllabusArgs, SyllabusDownload, SyllabusResult } from "./features/syllabus.js";
