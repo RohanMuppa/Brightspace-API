@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { registerGetAnnouncements } from "../../src/tools/get-announcements.js";
+import { getAnnouncements } from "../../src/features/announcements.js";
+import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
+import { ZodError } from "zod";
 
 /**
- * get_announcements used to show every news item the API returned, sorted by
+ * getAnnouncements used to show every news item the API returned, sorted by
  * CreatedDate. Both are wrong against a live tenant: an item with
  * IsPublished false is a draft the instructor has not posted, and CreatedDate
  * is when the instructor started typing, not when the post was scheduled to
@@ -18,22 +20,21 @@ const BASE = "https://brightspace.example.edu";
 const COURSE_A = { Id: 101, Name: "CS 180", Code: "cs180" };
 const COURSE_B = { Id: 202, Name: "MA 261", Code: "ma261" };
 
-function makeConfig(): AppConfig {
+function makeConfig(activeOnly = true): AppConfig {
   return {
     baseUrl: BASE,
     sessionDir: "/tmp/nope",
     tokenTtl: 3600,
     headless: true,
-    courseFilter: { activeOnly: true },
+    courseFilter: { activeOnly },
   } as AppConfig;
 }
 
 type Responder = (path: string) => unknown;
 
-/** Captures the registered handler; `respond` maps a request path to its payload. */
 function setup(respond: Responder, config: AppConfig = makeConfig()) {
   const requested: string[] = [];
-  const apiClient = {
+  const api = {
     lp: (p: string) => `/d2l/api/lp/1.0${p}`,
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (path: string) => {
@@ -41,16 +42,8 @@ function setup(respond: Responder, config: AppConfig = makeConfig()) {
       return respond(path);
     }),
   };
-
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_name: string, _meta: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerGetAnnouncements(server as any, apiClient as any, config);
-  return { call: (args: unknown) => handler!(args), requested };
+  const ctx = { api, config, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, requested };
 }
 
 const enrollmentItem = (c: typeof COURSE_A, isActive = true) => ({
@@ -61,8 +54,6 @@ const enrollmentItem = (c: typeof COURSE_A, isActive = true) => ({
 const enrollments = (...courses: Array<typeof COURSE_A>) => ({
   Items: courses.map((c) => enrollmentItem(c)),
 });
-
-const parse = (result: any): any[] => JSON.parse(result.content[0].text);
 
 /** A news item with only the fields a case cares about; the rest are D2L's usual shape. */
 const news = (item: Record<string, unknown>) => ({
@@ -90,46 +81,41 @@ const manyCourses = (byCourse: Record<number, unknown[]>): Responder => (path) =
   return match ? byCourse[Number(match[1])] ?? [] : [];
 };
 
-describe("get_announcements", () => {
+describe("getAnnouncements", () => {
   describe("unpublished drafts", () => {
     it("excludes an item with IsPublished false", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
           news({ Id: 1, Title: "Posted", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true }),
           news({ Id: 2, Title: "Draft", CreatedDate: "2026-09-02T00:00:00.000Z", StartDate: "2026-09-02T00:00:00.000Z", IsPublished: false }),
-        ])
+        ]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["Posted"]);
     });
 
     it("keeps an item that carries no IsPublished field at all", async () => {
-      const { call } = setup(
-        oneCourse([
-          news({ Id: 1, Title: "No flag", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z" }),
-        ])
+      const { ctx } = setup(
+        oneCourse([news({ Id: 1, Title: "No flag", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z" })]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["No flag"]);
     });
 
     it("keeps an item with IsPublished true", async () => {
-      const { call } = setup(
-        oneCourse([
-          news({ Id: 1, Title: "Posted", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true }),
-        ])
+      const { ctx } = setup(
+        oneCourse([news({ Id: 1, Title: "Posted", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true })]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["Posted"]);
     });
   });
 
   describe("scheduled-date ordering", () => {
     it("sorts by StartDate even when CreatedDate would give the opposite order", async () => {
-      // Written Friday, scheduled for Monday; written Saturday, scheduled for Sunday.
       const writtenFriday = news({
         Id: 1,
         Title: "Scheduled Monday",
@@ -145,88 +131,83 @@ describe("get_announcements", () => {
         IsPublished: true,
       });
 
-      const { call } = setup(oneCourse([writtenFriday, writtenSaturday]));
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const { ctx } = setup(oneCourse([writtenFriday, writtenSaturday]));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
 
       expect(items.map((i) => i.title)).toEqual(["Scheduled Monday", "Scheduled Sunday"]);
-      expect(items.map((i) => i.date)).toEqual([
-        "2026-09-07T09:00:00.000Z",
-        "2026-09-06T09:00:00.000Z",
-      ]);
+      expect(items.map((i) => i.date)).toEqual(["2026-09-07T09:00:00.000Z", "2026-09-06T09:00:00.000Z"]);
     });
 
     it("falls back to CreatedDate when an item has no StartDate", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
           news({ Id: 1, Title: "No start", CreatedDate: "2026-09-10T00:00:00.000Z", StartDate: null, IsPublished: true }),
           news({ Id: 2, Title: "Scheduled", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-05T00:00:00.000Z", IsPublished: true }),
-        ])
+        ]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["No start", "Scheduled"]);
       expect(items[0].date).toBe("2026-09-10T00:00:00.000Z");
     });
 
     it("sorts an item with neither date last, not to 1970", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
           news({ Id: 1, Title: "Undated", CreatedDate: null, StartDate: null, IsPublished: true }),
           news({ Id: 2, Title: "Oldest real", CreatedDate: "2020-01-01T00:00:00.000Z", StartDate: null, IsPublished: true }),
           news({ Id: 3, Title: "Newest real", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: null, IsPublished: true }),
-        ])
+        ]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["Newest real", "Oldest real", "Undated"]);
       expect(items[2].date).toBeNull();
     });
 
     it("keeps the server's own order when two items share a date", async () => {
       const same = "2026-09-01T12:00:00.000Z";
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
           news({ Id: 1, Title: "First posted", CreatedDate: same, StartDate: same, IsPublished: true }),
           news({ Id: 2, Title: "Second posted", CreatedDate: same, StartDate: same, IsPublished: true }),
-        ])
+        ]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items.map((i) => i.title)).toEqual(["First posted", "Second posted"]);
     });
   });
 
   it("omits createdDate and startDate, keeping only the effective date", async () => {
-    const { call } = setup(
-      oneCourse([
-        news({ Id: 1, Title: "Posted", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-02T00:00:00.000Z", IsPublished: true }),
-      ])
+    const { ctx } = setup(
+      oneCourse([news({ Id: 1, Title: "Posted", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-02T00:00:00.000Z", IsPublished: true })]),
     );
 
-    const items = parse(await call({ courseId: COURSE_A.Id }));
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
     expect(items[0]).not.toHaveProperty("createdDate");
     expect(items[0]).not.toHaveProperty("startDate");
     expect(items[0].date).toBe("2026-09-02T00:00:00.000Z");
   });
 
   it("applies the count slice after filtering and sorting", async () => {
-    const { call } = setup(
+    const { ctx } = setup(
       oneCourse([
         news({ Id: 1, Title: "Draft newest", CreatedDate: "2026-09-09T00:00:00.000Z", StartDate: "2026-09-09T00:00:00.000Z", IsPublished: false }),
         news({ Id: 2, Title: "Third", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true }),
         news({ Id: 3, Title: "First", CreatedDate: "2026-09-08T00:00:00.000Z", StartDate: "2026-09-08T00:00:00.000Z", IsPublished: true }),
         news({ Id: 4, Title: "Second", CreatedDate: "2026-09-05T00:00:00.000Z", StartDate: "2026-09-05T00:00:00.000Z", IsPublished: true }),
-      ])
+      ]),
     );
 
-    const items = parse(await call({ courseId: COURSE_A.Id, count: 2 }));
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id, count: 2 })) as any[];
     // The draft is gone before the slice, so the cap is spent on real posts.
     expect(items.map((i) => i.title)).toEqual(["First", "Second"]);
   });
 
   describe("the all-courses path", () => {
     it("filters drafts and sorts by StartDate across courses", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         manyCourses({
           [COURSE_A.Id]: [
             news({ Id: 1, Title: "A draft", CreatedDate: "2026-09-09T00:00:00.000Z", StartDate: "2026-09-09T00:00:00.000Z", IsPublished: false }),
@@ -236,15 +217,11 @@ describe("get_announcements", () => {
             news({ Id: 3, Title: "B scheduled Sunday", CreatedDate: "2026-09-05T00:00:00.000Z", StartDate: "2026-09-06T00:00:00.000Z", IsPublished: true }),
             news({ Id: 4, Title: "B no flag", CreatedDate: "2026-09-02T00:00:00.000Z", StartDate: null, IsPublished: undefined }),
           ],
-        })
+        }),
       );
 
-      const items = parse(await call({}));
-      expect(items.map((i) => i.title)).toEqual([
-        "A scheduled Monday",
-        "B scheduled Sunday",
-        "B no flag",
-      ]);
+      const items = (await getAnnouncements(ctx, {})) as any[];
+      expect(items.map((i) => i.title)).toEqual(["A scheduled Monday", "B scheduled Sunday", "B no flag"]);
       expect(items[0]).toMatchObject({ courseId: COURSE_A.Id, courseName: COURSE_A.Name });
       expect(items[2]).toMatchObject({ courseId: COURSE_B.Id, date: "2026-09-02T00:00:00.000Z" });
     });
@@ -256,92 +233,69 @@ describe("get_announcements", () => {
      */
     it("follows the enrollment bookmark chain instead of stopping at page one", async () => {
       const newsByCourse: Record<number, unknown[]> = {
-        [COURSE_A.Id]: [
-          news({ Id: 1, Title: "A post", CreatedDate: "2026-09-08T00:00:00.000Z", StartDate: null, IsPublished: true }),
-        ],
-        [COURSE_B.Id]: [
-          news({ Id: 2, Title: "B post", CreatedDate: "2026-09-03T00:00:00.000Z", StartDate: null, IsPublished: true }),
-        ],
+        [COURSE_A.Id]: [news({ Id: 1, Title: "A post", CreatedDate: "2026-09-08T00:00:00.000Z", StartDate: null, IsPublished: true })],
+        [COURSE_B.Id]: [news({ Id: 2, Title: "B post", CreatedDate: "2026-09-03T00:00:00.000Z", StartDate: null, IsPublished: true })],
       };
 
-      const { call, requested } = setup((path) => {
+      const { ctx, requested } = setup((path) => {
         if (path.includes("/enrollments/")) {
           return path.includes("bookmark=")
             ? { Items: [enrollmentItem(COURSE_B)], PagingInfo: { HasMoreItems: false } }
-            : {
-                Items: [enrollmentItem(COURSE_A)],
-                PagingInfo: { HasMoreItems: true, Bookmark: "page-2" },
-              };
+            : { Items: [enrollmentItem(COURSE_A)], PagingInfo: { HasMoreItems: true, Bookmark: "page-2" } };
         }
         const match = path.match(/\/le\/1\.0\/(\d+)\//);
         return match ? newsByCourse[Number(match[1])] ?? [] : [];
       });
 
-      const items = parse(await call({}));
+      const items = (await getAnnouncements(ctx, {})) as any[];
       expect(items.map((i) => i.title)).toEqual(["A post", "B post"]);
       expect(requested.filter((p) => p.includes("/enrollments/"))).toHaveLength(2);
     });
 
     /**
-     * activeOnly is a configured policy, not a constant. With it off the user
+     * activeOnly is a configured policy, not a constant. With it off the caller
      * asked to see past courses; hard-coding isActive=true into the query made
      * the server drop them before the filter ever saw them.
      */
     it("drops isActive=true from the query when activeOnly is off", async () => {
       const respond: Responder = (path) => {
         if (path.includes("/enrollments/")) {
-          // D2L filters server-side, so isActive=true really does hide COURSE_B.
-          const items = path.includes("isActive=true")
-            ? [enrollmentItem(COURSE_A)]
-            : [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B, false)];
+          const items = path.includes("isActive=true") ? [enrollmentItem(COURSE_A)] : [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B, false)];
           return { Items: items };
         }
         const match = path.match(/\/le\/1\.0\/(\d+)\//);
         if (!match) return [];
-        return [
-          news({
-            Id: Number(match[1]),
-            Title: `post ${match[1]}`,
-            CreatedDate: "2026-09-01T00:00:00.000Z",
-            StartDate: null,
-            IsPublished: true,
-          }),
-        ];
+        return [news({ Id: Number(match[1]), Title: `post ${match[1]}`, CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: null, IsPublished: true })];
       };
 
-      const { call, requested } = setup(respond, {
-        ...makeConfig(),
-        courseFilter: { activeOnly: false },
-      } as AppConfig);
+      const { ctx, requested } = setup(respond, { ...makeConfig(), courseFilter: { activeOnly: false } } as AppConfig);
 
-      const items = parse(await call({}));
+      const items = (await getAnnouncements(ctx, {})) as any[];
       expect(requested[0]).not.toContain("isActive=true");
       expect(items.map((i) => i.courseId).sort()).toEqual([COURSE_A.Id, COURSE_B.Id]);
     });
 
     it("still asks only for active enrollments under the default policy", async () => {
-      const { call, requested } = setup(manyCourses({ [COURSE_A.Id]: [] }));
-      await call({});
+      const { ctx, requested } = setup(manyCourses({ [COURSE_A.Id]: [] }));
+      await getAnnouncements(ctx, {});
       expect(requested[0]).toContain("isActive=true");
     });
 
     it("sorts an undated item last and honours count across courses", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         manyCourses({
           [COURSE_A.Id]: [
             news({ Id: 1, Title: "A undated", CreatedDate: null, StartDate: null, IsPublished: true }),
             news({ Id: 2, Title: "A newest", CreatedDate: "2026-09-08T00:00:00.000Z", StartDate: null, IsPublished: true }),
           ],
-          [COURSE_B.Id]: [
-            news({ Id: 3, Title: "B middle", CreatedDate: "2026-09-03T00:00:00.000Z", StartDate: null, IsPublished: true }),
-          ],
-        })
+          [COURSE_B.Id]: [news({ Id: 3, Title: "B middle", CreatedDate: "2026-09-03T00:00:00.000Z", StartDate: null, IsPublished: true })],
+        }),
       );
 
-      const all = parse(await call({}));
+      const all = (await getAnnouncements(ctx, {})) as any[];
       expect(all.map((i) => i.title)).toEqual(["A newest", "B middle", "A undated"]);
 
-      const capped = parse(await call({ count: 2 }));
+      const capped = (await getAnnouncements(ctx, { count: 2 })) as any[];
       expect(capped.map((i) => i.title)).toEqual(["A newest", "B middle"]);
     });
   });
@@ -350,141 +304,158 @@ describe("get_announcements", () => {
     const CUTOFF = "2026-09-15T00:00:00.000Z";
 
     it("emits lastModified on every announcement", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
-          news({ Id: 1, Title: "A", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", LastModifiedDate: "2026-09-10T00:00:00.000Z", IsPublished: true }),
-        ])
+          news({
+            Id: 1,
+            Title: "A",
+            CreatedDate: "2026-09-01T00:00:00.000Z",
+            StartDate: "2026-09-01T00:00:00.000Z",
+            LastModifiedDate: "2026-09-10T00:00:00.000Z",
+            IsPublished: true,
+          }),
+        ]),
       );
 
-      const items = parse(await call({ courseId: COURSE_A.Id }));
+      const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
       expect(items[0].lastModified).toBe("2026-09-10T00:00:00.000Z");
     });
 
     it("returns a bare array, unchanged, when modifiedSince is omitted", async () => {
-      const { call } = setup(
-        oneCourse([
-          news({ Id: 1, Title: "A", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true }),
-        ])
+      const { ctx } = setup(
+        oneCourse([news({ Id: 1, Title: "A", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", IsPublished: true })]),
       );
 
-      const result = await call({ courseId: COURSE_A.Id });
-      const body = JSON.parse(result.content[0].text);
-      expect(Array.isArray(body)).toBe(true);
+      const result = await getAnnouncements(ctx, { courseId: COURSE_A.Id });
+      expect(Array.isArray(result)).toBe(true);
     });
 
     it("filters out announcements modified before the cutoff, on the single-course path", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
-          news({ Id: 1, Title: "New", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", LastModifiedDate: "2026-09-20T00:00:00.000Z", IsPublished: true }),
-          news({ Id: 2, Title: "Old", CreatedDate: "2026-09-02T00:00:00.000Z", StartDate: "2026-09-02T00:00:00.000Z", LastModifiedDate: "2026-01-01T00:00:00.000Z", IsPublished: true }),
-        ])
+          news({
+            Id: 1,
+            Title: "New",
+            CreatedDate: "2026-09-01T00:00:00.000Z",
+            StartDate: "2026-09-01T00:00:00.000Z",
+            LastModifiedDate: "2026-09-20T00:00:00.000Z",
+            IsPublished: true,
+          }),
+          news({
+            Id: 2,
+            Title: "Old",
+            CreatedDate: "2026-09-02T00:00:00.000Z",
+            StartDate: "2026-09-02T00:00:00.000Z",
+            LastModifiedDate: "2026-01-01T00:00:00.000Z",
+            IsPublished: true,
+          }),
+        ]),
       );
 
-      const result = await call({ courseId: COURSE_A.Id, modifiedSince: CUTOFF });
-      const body = JSON.parse(result.content[0].text);
+      const result = (await getAnnouncements(ctx, { courseId: COURSE_A.Id, modifiedSince: CUTOFF })) as any;
 
-      expect(body.announcements.map((a: any) => a.title)).toEqual(["New"]);
-      expect(body.modifiedSince).toBe(CUTOFF);
-      expect(body.returned).toBe(1);
-      expect(body.filteredOut).toBe(1);
+      expect(result.announcements.map((a: any) => a.title)).toEqual(["New"]);
+      expect(result.modifiedSince).toBe(CUTOFF);
+      expect(result.returned).toBe(1);
+      expect(result.filteredOut).toBe(1);
     });
 
     it("filters across courses on the all-courses path", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         manyCourses({
           [COURSE_A.Id]: [
-            news({ Id: 1, Title: "A new", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", LastModifiedDate: "2026-09-20T00:00:00.000Z", IsPublished: true }),
+            news({
+              Id: 1,
+              Title: "A new",
+              CreatedDate: "2026-09-01T00:00:00.000Z",
+              StartDate: "2026-09-01T00:00:00.000Z",
+              LastModifiedDate: "2026-09-20T00:00:00.000Z",
+              IsPublished: true,
+            }),
           ],
           [COURSE_B.Id]: [
-            news({ Id: 2, Title: "B old", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", LastModifiedDate: "2026-01-01T00:00:00.000Z", IsPublished: true }),
+            news({
+              Id: 2,
+              Title: "B old",
+              CreatedDate: "2026-09-01T00:00:00.000Z",
+              StartDate: "2026-09-01T00:00:00.000Z",
+              LastModifiedDate: "2026-01-01T00:00:00.000Z",
+              IsPublished: true,
+            }),
           ],
-        })
+        }),
       );
 
-      const result = await call({ modifiedSince: CUTOFF });
-      const body = JSON.parse(result.content[0].text);
+      const result = (await getAnnouncements(ctx, { modifiedSince: CUTOFF })) as any;
 
-      expect(body.announcements.map((a: any) => a.title)).toEqual(["A new"]);
-      expect(body.filteredOut).toBe(1);
+      expect(result.announcements.map((a: any) => a.title)).toEqual(["A new"]);
+      expect(result.filteredOut).toBe(1);
     });
 
     it("keeps an announcement with no LastModifiedDate rather than dropping it", async () => {
-      const { call } = setup(
+      const { ctx } = setup(
         oneCourse([
-          news({ Id: 1, Title: "No timestamp", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z", LastModifiedDate: null as any, IsPublished: true }),
-        ])
+          news({
+            Id: 1,
+            Title: "No timestamp",
+            CreatedDate: "2026-09-01T00:00:00.000Z",
+            StartDate: "2026-09-01T00:00:00.000Z",
+            LastModifiedDate: null as any,
+            IsPublished: true,
+          }),
+        ]),
       );
 
-      const result = await call({ courseId: COURSE_A.Id, modifiedSince: CUTOFF });
-      const body = JSON.parse(result.content[0].text);
-      expect(body.announcements.map((a: any) => a.title)).toEqual(["No timestamp"]);
-      expect(body.filteredOut).toBe(0);
+      const result = (await getAnnouncements(ctx, { courseId: COURSE_A.Id, modifiedSince: CUTOFF })) as any;
+      expect(result.announcements.map((a: any) => a.title)).toEqual(["No timestamp"]);
+      expect(result.filteredOut).toBe(0);
     });
 
-    it("rejects a malformed modifiedSince with a validation error naming the expected format", async () => {
-      const { call } = setup(oneCourse([]));
-      const result = await call({ courseId: COURSE_A.Id, modifiedSince: "yesterday" });
+    it("rejects a malformed modifiedSince with a ZodError naming the expected format", async () => {
+      const { ctx } = setup(oneCourse([]));
 
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toMatch(/modifiedSince/);
-      expect(result.content[0].text).toMatch(/ISO 8601/);
+      await expect(getAnnouncements(ctx, { courseId: COURSE_A.Id, modifiedSince: "yesterday" })).rejects.toBeInstanceOf(ZodError);
+      await expect(getAnnouncements(ctx, { courseId: COURSE_A.Id, modifiedSince: "yesterday" })).rejects.toMatchObject({
+        issues: [expect.objectContaining({ message: expect.stringMatching(/modifiedSince must be an ISO 8601 datetime/) })],
+      });
     });
   });
 });
 
-describe("get_announcements attachments", () => {
+describe("getAnnouncements attachments", () => {
   it("lists an announcement's attached files by fileId, fileName and size", async () => {
-    const { call } = setup(
+    const { ctx } = setup(
       oneCourse([
-        news({
-          Id: 1,
-          StartDate: "2026-09-18T00:00:00.000Z",
-          Attachments: [{ FileId: 77, FileName: "Field notes prompts.docx", Size: 20480 }],
-        }),
-      ])
+        news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: [{ FileId: 77, FileName: "Field notes prompts.docx", Size: 20480 }] }),
+      ]),
     );
 
-    const items = parse(await call({ courseId: COURSE_A.Id }));
-    expect(items[0].attachments).toEqual([
-      { fileId: 77, fileName: "Field notes prompts.docx", size: 20480 },
-    ]);
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].attachments).toEqual([{ fileId: 77, fileName: "Field notes prompts.docx", size: 20480 }]);
   });
 
   it("omits the attachments key on an announcement with no files", async () => {
-    const { call } = setup(
-      oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: [] })])
-    );
+    const { ctx } = setup(oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: [] })]));
 
-    const items = parse(await call({ courseId: COURSE_A.Id }));
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
     expect(items[0]).not.toHaveProperty("attachments");
   });
 
   it("omits the attachments key when the tenant sends no Attachments field", async () => {
-    const { call } = setup(
-      oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: undefined })])
-    );
+    const { ctx } = setup(oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: undefined })]));
 
-    const items = parse(await call({ courseId: COURSE_A.Id }));
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
     expect(items[0]).not.toHaveProperty("attachments");
   });
 
   it("carries the courseId beside attachments on the all-courses path", async () => {
-    const { call } = setup(
+    const { ctx } = setup(
       manyCourses({
-        [COURSE_A.Id]: [
-          news({
-            Id: 1,
-            StartDate: "2026-09-18T00:00:00.000Z",
-            Attachments: [{ FileId: 77, FileName: "rubric.pdf", Size: 100 }],
-          }),
-        ],
-      })
+        [COURSE_A.Id]: [news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Attachments: [{ FileId: 77, FileName: "rubric.pdf", Size: 100 }] })],
+      }),
     );
 
-    const items = parse(await call({}));
-    expect(items[0]).toMatchObject({
-      courseId: COURSE_A.Id,
-      attachments: [{ fileId: 77, fileName: "rubric.pdf", size: 100 }],
-    });
+    const items = (await getAnnouncements(ctx, {})) as any[];
+    expect(items[0]).toMatchObject({ courseId: COURSE_A.Id, attachments: [{ fileId: 77, fileName: "rubric.pdf", size: 100 }] });
   });
 });
