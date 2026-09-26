@@ -38,9 +38,18 @@ describe("resolved authentication configuration", () => {
       sessionRoot: root, sessionDir: accountSessionDirectory(root, "https://school.example", "alice"), headless: false,
     });
     expect(fake.dotenv).toHaveBeenCalledWith({ quiet: true });
-    expect(fake.password).toHaveBeenCalledWith("https://school.example", "alice", null);
+    expect(fake.password).toHaveBeenCalledWith("https://school.example", "alice", null, false);
     expect(fake.migrate).toHaveBeenCalledWith(root);
     expect(config.legacyBrowserStateMigrated).toBe(true);
+  });
+
+  it("asks for a tolerant credential-store read when told to", async () => {
+    fake.dotenv.mockImplementation(() => {
+      vi.stubEnv("D2L_BASE_URL", "https://school.example");
+      vi.stubEnv("D2L_USERNAME", "alice");
+    });
+    await loadConfig({ tolerateCredentialStore: true });
+    expect(fake.password).toHaveBeenCalledWith("https://school.example", "alice", null, true);
   });
 
   it("uses the setup MFA preference when no environment override is present", async () => {
