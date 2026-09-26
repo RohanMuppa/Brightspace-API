@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { registerGetUpcomingDueDates } from "../../src/tools/get-upcoming-due-dates.js";
+import { getUpcomingDueDates } from "../../src/features/due-dates.js";
+import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
 
 /**
@@ -12,8 +13,7 @@ import type { AppConfig } from "../../src/types/index.js";
 const BASE = "https://brightspace.example.edu";
 const NOW = new Date("2026-09-02T12:00:00.000Z");
 
-const daysFromNow = (days: number): string =>
-  new Date(NOW.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+const daysFromNow = (days: number): string => new Date(NOW.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
 
 const COURSE_A = { Id: 101, Name: "CS 180", Code: "cs180" };
 const COURSE_B = { Id: 202, Name: "MA 261", Code: "ma261" };
@@ -30,10 +30,9 @@ function makeConfig(): AppConfig {
 
 type Responder = (path: string) => unknown;
 
-/** Captures the registered handler; `respond` maps a request path to its payload. */
 function setup(respond: Responder, config: AppConfig = makeConfig()) {
   const requested: string[] = [];
-  const apiClient = {
+  const api = {
     lp: (p: string) => `/d2l/api/lp/1.0${p}`,
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (path: string) => {
@@ -41,16 +40,8 @@ function setup(respond: Responder, config: AppConfig = makeConfig()) {
       return respond(path);
     }),
   };
-
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_name: string, _meta: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerGetUpcomingDueDates(server as any, apiClient as any, config);
-  return { call: (args: unknown) => handler!(args), requested };
+  const ctx = { api, config, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, requested };
 }
 
 const enrollments = (...courses: Array<typeof COURSE_A>) => ({
@@ -60,11 +51,9 @@ const enrollments = (...courses: Array<typeof COURSE_A>) => ({
   })),
 });
 
-const parse = (result: any): any[] => JSON.parse(result.content[0].text);
-
 const forbidden = () => Object.assign(new Error("Forbidden"), { status: 403 });
 
-describe("get_upcoming_due_dates", () => {
+describe("getUpcomingDueDates", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -83,16 +72,16 @@ describe("get_upcoming_due_dates", () => {
       DueDate: daysFromNow(5),
       IsActive: true,
     };
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/quizzes/")) return { Objects: [quiz] };
       return { Objects: [] };
     });
 
-    const narrow = parse(await call({ daysAhead: 3 }));
+    const narrow = await getUpcomingDueDates(ctx, { daysAhead: 3 });
     expect(narrow).toEqual([]);
 
-    const wide = parse(await call({ daysAhead: 7 }));
+    const wide = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(wide).toHaveLength(1);
     expect(wide[0]).toMatchObject({
       type: "quiz",
@@ -115,19 +104,19 @@ describe("get_upcoming_due_dates", () => {
       DueDate: null,
       IsActive: true,
     };
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/quizzes/")) return [quiz];
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items).toHaveLength(1);
     expect(items[0].dueDate).toBe(quiz.EndDate);
   });
 
   it("skips hidden dropbox folders, inactive quizzes, and items with no due date", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/dropbox/folders/")) {
         return [
@@ -146,32 +135,30 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => `${i.type}:${i.id}`)).toEqual(["assignment:1", "quiz:10"]);
   });
 
   it("parses both a bare array and an { Objects } wrapper", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/dropbox/folders/")) {
         return [{ Id: 1, Name: "Bare", DueDate: daysFromNow(1), IsHidden: false }];
       }
       if (path.includes("/quizzes/")) {
         return {
-          Objects: [
-            { QuizId: 2, Name: "Wrapped", StartDate: null, EndDate: null, DueDate: daysFromNow(2), IsActive: true },
-          ],
+          Objects: [{ QuizId: 2, Name: "Wrapped", StartDate: null, EndDate: null, DueDate: daysFromNow(2), IsActive: true }],
         };
       }
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => i.title)).toEqual(["Bare", "Wrapped"]);
   });
 
   it("keeps the other course's items when one course returns 403", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
       if (path.includes(`/${COURSE_B.Id}/`)) throw forbidden();
       if (path.includes("/dropbox/folders/")) {
@@ -180,13 +167,13 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ courseId: 101, courseName: "CS 180", title: "HW 1" });
   });
 
   it("sorts ascending by dueDate across courses and item types", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
       if (path.includes(`/${COURSE_A.Id}/dropbox/`)) {
         return [{ Id: 1, Name: "Due day 5", DueDate: daysFromNow(5), IsHidden: false }];
@@ -203,12 +190,12 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => i.title)).toEqual(["Due day 1", "Due day 3", "Due day 5"]);
   });
 
   it("excludes items already past due", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/dropbox/folders/")) {
         return [{ Id: 1, Name: "Late", DueDate: daysFromNow(-1), IsHidden: false }];
@@ -216,11 +203,11 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    expect(parse(await call({ daysAhead: 7 }))).toEqual([]);
+    expect(await getUpcomingDueDates(ctx, { daysAhead: 7 })).toEqual([]);
   });
 
   it("emits deep-link urls for assignments and quizzes", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/dropbox/folders/")) {
         return [{ Id: 55, Name: "HW", DueDate: daysFromNow(1), IsHidden: false }];
@@ -231,17 +218,15 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const [assignment, quiz] = parse(await call({ daysAhead: 7 }));
-    expect(assignment.url).toBe(
-      `${BASE}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=55&grpid=0&ou=101`
-    );
+    const [assignment, quiz] = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(assignment.url).toBe(`${BASE}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=55&grpid=0&ou=101`);
     expect(assignment.startDate).toBeNull();
     expect(assignment.endDate).toBeNull();
     expect(quiz.url).toBe(`${BASE}/d2l/lms/quizzing/user/quiz_summary.d2l?qi=66&ou=101`);
   });
 
   it("queries only the requested course when courseId is given and still names it", async () => {
-    const { call, requested } = setup((path) => {
+    const { ctx, requested } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
       if (path.includes("/dropbox/folders/")) {
         return [{ Id: 1, Name: "HW", DueDate: daysFromNow(1), IsHidden: false }];
@@ -249,14 +234,14 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7, courseId: COURSE_B.Id }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7, courseId: COURSE_B.Id });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ courseId: 202, courseName: "MA 261" });
     expect(requested.some((p) => p.includes(`/${COURSE_A.Id}/`))).toBe(false);
   });
 
   it("does not call submission, feedback, or attempt endpoints", async () => {
-    const { call, requested } = setup((path) => {
+    const { ctx, requested } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/dropbox/folders/")) {
         return [{ Id: 1, Name: "HW", DueDate: daysFromNow(1), IsHidden: false }];
@@ -267,18 +252,16 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    await call({ daysAhead: 7 });
+    await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(requested.filter((p) => /submissions|feedback|attempts/.test(p))).toEqual([]);
     expect(requested.filter((p) => p.includes(`/${COURSE_A.Id}/`))).toHaveLength(3);
   });
 
   it("includes a graded discussion topic with a due date (issue #36)", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/discussions/forums/") && path.endsWith("/topics/")) {
-        return [
-          { TopicId: 501, Name: "Reading response #1", DueDate: daysFromNow(3), IsHidden: false },
-        ];
+        return [{ TopicId: 501, Name: "Reading response #1", DueDate: daysFromNow(3), IsHidden: false }];
       }
       if (path.includes("/discussions/forums/")) {
         return [{ ForumId: 9, Name: "Reading Responses" }];
@@ -286,7 +269,7 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       type: "discussion",
@@ -295,13 +278,11 @@ describe("get_upcoming_due_dates", () => {
       courseId: 101,
       courseName: "CS 180",
     });
-    expect(items[0].url).toBe(
-      `${BASE}/d2l/lms/discussions/threadlist.d2l?ou=101&tId=501`
-    );
+    expect(items[0].url).toBe(`${BASE}/d2l/lms/discussions/threadlist.d2l?ou=101&tId=501`);
   });
 
   it("excludes discussion topics with no due date, and hidden ones", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/discussions/forums/") && path.endsWith("/topics/")) {
         return [
@@ -315,11 +296,11 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    expect(parse(await call({ daysAhead: 7 }))).toEqual([]);
+    expect(await getUpcomingDueDates(ctx, { daysAhead: 7 })).toEqual([]);
   });
 
   it("keeps other sources when the discussions fetch fails", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/discussions/forums/")) throw new Error("network error");
       if (path.includes("/dropbox/folders/")) {
@@ -328,13 +309,13 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ type: "assignment", title: "HW" });
   });
 
   it("excludes every topic inside a hidden forum, however visible the topic", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/discussions/forums/9/topics/")) {
         return [{ TopicId: 55, Name: "Unreleased draft", DueDate: daysFromNow(2), IsHidden: false }];
@@ -351,12 +332,12 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => i.title)).toEqual(["Reading response #3"]);
   });
 
   it("keeps other forums when one forum's topics fail to load", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);
       if (path.includes("/discussions/forums/9/topics/")) throw forbidden();
       if (path.includes("/discussions/forums/10/topics/")) {
@@ -371,17 +352,17 @@ describe("get_upcoming_due_dates", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => i.title)).toEqual(["Reading response #2"]);
   });
 });
 
 /**
- * The course list this tool walks comes from the same paged myenrollments
- * endpoint get_my_courses reads. Reading only the first page silently drops
+ * The course list this function walks comes from the same paged myenrollments
+ * endpoint getMyCourses reads. Reading only the first page silently drops
  * every course after it, and every deadline in those courses with it.
  */
-describe("get_upcoming_due_dates course resolution", () => {
+describe("getUpcomingDueDates course resolution", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -402,11 +383,9 @@ describe("get_upcoming_due_dates course resolution", () => {
   });
 
   it("walks every page of enrollments", async () => {
-    const { call } = setup((path) => {
+    const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) {
-        return path.includes("bookmark=b1")
-          ? enrollmentPage(COURSE_B)
-          : enrollmentPage(COURSE_A, "b1");
+        return path.includes("bookmark=b1") ? enrollmentPage(COURSE_B) : enrollmentPage(COURSE_A, "b1");
       }
       if (path.includes(`/${COURSE_B.Id}/dropbox/`)) {
         return [{ Id: 9, Name: "HW from the second page", DueDate: daysFromNow(1), IsHidden: false }];
@@ -414,7 +393,7 @@ describe("get_upcoming_due_dates course resolution", () => {
       return [];
     });
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(items.map((i) => i.title)).toEqual(["HW from the second page"]);
   });
 
@@ -425,25 +404,28 @@ describe("get_upcoming_due_dates course resolution", () => {
     // Stand in for the server: isActive=true in the query really does withhold
     // the archived course, so a hardcoded filter loses it before any client
     // side filter can be asked about it.
-    const { call, requested } = setup((path) => {
-      if (path.includes("/enrollments/")) {
-        if (path.includes("isActive=true")) return { Items: [] };
-        return {
-          Items: [
-            {
-              OrgUnit: COURSE_B,
-              Access: { ClasslistRoleName: "Student", IsActive: false, LastAccessed: null },
-            },
-          ],
-        };
-      }
-      if (path.includes("/dropbox/folders/")) {
-        return [{ Id: 1, Name: "Incomplete from last term", DueDate: daysFromNow(1), IsHidden: false }];
-      }
-      return [];
-    }, config);
+    const { ctx, requested } = setup(
+      (path) => {
+        if (path.includes("/enrollments/")) {
+          if (path.includes("isActive=true")) return { Items: [] };
+          return {
+            Items: [
+              {
+                OrgUnit: COURSE_B,
+                Access: { ClasslistRoleName: "Student", IsActive: false, LastAccessed: null },
+              },
+            ],
+          };
+        }
+        if (path.includes("/dropbox/folders/")) {
+          return [{ Id: 1, Name: "Incomplete from last term", DueDate: daysFromNow(1), IsHidden: false }];
+        }
+        return [];
+      },
+      config,
+    );
 
-    const items = parse(await call({ daysAhead: 7 }));
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(requested[0]).not.toContain("isActive=true");
     expect(items.map((i) => i.title)).toEqual(["Incomplete from last term"]);
   });
