@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { registerGetAssignmentFiles, fileKind } from "../../src/tools/get-assignment-files.js";
+import { getAssignmentFiles, fileKind } from "../../src/features/assignment-files.js";
+import type { FeatureContext } from "../../src/features/context.js";
+import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
 
 /**
  * Reading the spec document attached to an assignment was the one student
@@ -80,7 +82,7 @@ function setup({ folders, file }: Setup) {
   const requested: string[] = [];
   const rawRequested: string[] = [];
 
-  const apiClient = {
+  const api = {
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (path: string) => {
       requested.push(path);
@@ -101,18 +103,10 @@ function setup({ folders, file }: Setup) {
     }),
   };
 
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_n: string, _m: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerGetAssignmentFiles(server as any, apiClient as any, BASE);
-  return { call: (args: unknown) => handler!(args), requested, rawRequested, apiClient };
+  const config = { baseUrl: BASE } as any;
+  const ctx = { api, config, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, requested, rawRequested };
 }
-
-const parse = (result: any) => JSON.parse(result.content[0].text);
 
 describe("fileKind", () => {
   it("maps the extensions that matter and defaults to other", () => {
@@ -127,9 +121,9 @@ describe("fileKind", () => {
   });
 });
 
-describe("get_assignment_files discovery", () => {
+describe("getAssignmentFiles discovery", () => {
   it("lists only assignments that have attachments, and downloads nothing", async () => {
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       folders: [
         folder(1, "Lab 4", [attachment(11, "spec.pdf", 2048)]),
         folder(2, "Reading", []),
@@ -137,153 +131,183 @@ describe("get_assignment_files discovery", () => {
       ],
     });
 
-    const payload = parse(await call({ courseId: COURSE }));
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE });
+    if (!("assignments" in result)) throw new Error("expected the discovery shape");
 
-    expect(payload.assignments).toHaveLength(2);
-    expect(payload.assignments[0]).toMatchObject({
+    expect(result.assignments).toHaveLength(2);
+    expect(result.assignments[0]).toMatchObject({
       folderId: 1,
       folderName: "Lab 4",
       url: `${BASE}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=1&grpid=0&ou=${COURSE}`,
     });
-    expect(payload.assignments[0].attachments[0]).toEqual({
+    expect(result.assignments[0].attachments[0]).toEqual({
       fileId: 11,
       fileName: "spec.pdf",
       size: 2048,
       kind: "pdf",
     });
-    expect(payload.assignments[1].attachments.map((a: any) => a.kind)).toEqual(["xlsx", "docx"]);
+    expect(result.assignments[1].attachments.map((a) => a.kind)).toEqual(["xlsx", "docx"]);
     expect(rawRequested).toEqual([]);
   });
 
   it("excludes hidden folders", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [
         folder(1, "Visible", [attachment(11, "a.pdf")]),
         folder(2, "Hidden", [attachment(21, "b.pdf")], { IsHidden: true }),
       ],
     });
 
-    const payload = parse(await call({ courseId: COURSE }));
-    expect(payload.assignments.map((a: any) => a.folderId)).toEqual([1]);
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE });
+    if (!("assignments" in result)) throw new Error("expected the discovery shape");
+    expect(result.assignments.map((a) => a.folderId)).toEqual([1]);
   });
 
   it("accepts the paged envelope as well as a bare array", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: { Objects: [folder(1, "Lab 4", [attachment(11, "spec.pdf")])] },
     });
 
-    const payload = parse(await call({ courseId: COURSE }));
-    expect(payload.assignments).toHaveLength(1);
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE });
+    if (!("assignments" in result)) throw new Error("expected the discovery shape");
+    expect(result.assignments).toHaveLength(1);
   });
 
   it("says so plainly when no assignment has a file", async () => {
-    const { call } = setup({ folders: [folder(1, "Reading", [])] });
+    const { ctx } = setup({ folders: [folder(1, "Reading", [])] });
 
-    const payload = parse(await call({ courseId: COURSE }));
-    expect(payload.assignments).toEqual([]);
-    expect(payload.note).toMatch(/no assignment/i);
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE });
+    if (!("assignments" in result)) throw new Error("expected the discovery shape");
+    expect(result.assignments).toEqual([]);
+    expect(result.note).toMatch(/no assignment/i);
   });
 
   it("narrows to one folder when folderId is given", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [
         folder(1, "Lab 4", [attachment(11, "spec.pdf")]),
         folder(2, "Project", [attachment(21, "rubric.docx")]),
       ],
     });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 2 }));
-    expect(payload.assignments).toHaveLength(1);
-    expect(payload.assignments[0].folderName).toBe("Project");
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 2 });
+    if (!("assignments" in result)) throw new Error("expected the discovery shape");
+    expect(result.assignments).toHaveLength(1);
+    expect(result.assignments[0].folderName).toBe("Project");
   });
 });
 
-describe("get_assignment_files reading one file", () => {
+describe("getAssignmentFiles reading one file", () => {
   it("returns the text of a DOCX attachment", async () => {
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "spec.docx")])],
       file: docxBuffer("Build a parser and submit the source"),
     });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 1, fileId: 11 }));
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
 
-    expect(payload.file.text).toContain("Build a parser");
-    expect(payload.file.truncated).toBe(false);
-    expect(payload.file.kind).toBe("docx");
+    expect(result.file.text).toContain("Build a parser");
+    expect(result.file.truncated).toBe(false);
+    expect(result.file.kind).toBe("docx");
     expect(rawRequested).toEqual(["/d2l/api/le/1.0/101/dropbox/folders/1/attachments/11"]);
   });
 
   it("truncates at maxChars and says it did", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "spec.docx")])],
       file: docxBuffer("x".repeat(500)),
     });
 
-    const payload = parse(
-      await call({ courseId: COURSE, folderId: 1, fileId: 11, maxChars: 50 })
-    );
+    const result = await getAssignmentFiles(ctx, {
+      courseId: COURSE,
+      folderId: 1,
+      fileId: 11,
+      maxChars: 50,
+    });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
 
-    expect(payload.file.text).toHaveLength(50);
-    expect(payload.file.truncated).toBe(true);
+    expect(result.file.text).toHaveLength(50);
+    expect(result.file.truncated).toBe(true);
   });
 
   it("reads plain text directly", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "readme.txt")])],
       file: Buffer.from("Answer all six questions.", "utf-8"),
     });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 1, fileId: 11 }));
-    expect(payload.file.text).toBe("Answer all six questions.");
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
+    expect(result.file.text).toBe("Answer all six questions.");
   });
 
   it("reports a type it cannot read instead of failing", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "diagram.png")])],
       file: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
     });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 1, fileId: 11 }));
-    expect(payload.file.text).toBeNull();
-    expect(payload.file.note).toMatch(/download_file/);
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
+    expect(result.file.text).toBeNull();
+    expect(result.file.note).toMatch(/download_file/);
   });
 
   it("skips the download when extractText is false", async () => {
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "spec.docx")])],
       file: docxBuffer("unused"),
     });
 
-    const payload = parse(
-      await call({ courseId: COURSE, folderId: 1, fileId: 11, extractText: false })
-    );
+    const result = await getAssignmentFiles(ctx, {
+      courseId: COURSE,
+      folderId: 1,
+      fileId: 11,
+      extractText: false,
+    });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
 
-    expect(payload.file.text).toBeNull();
+    expect(result.file.text).toBeNull();
     expect(rawRequested).toEqual([]);
   });
 
   it("names the available files when the fileId is wrong", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       folders: [folder(1, "Lab 4", [attachment(11, "spec.pdf")])],
       file: Buffer.alloc(0),
     });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 1, fileId: 999 }));
-    expect(payload.error).toMatch(/no attachment with id 999/i);
-    expect(payload.available[0].fileId).toBe(11);
+    const error: Error = await getAssignmentFiles(ctx, {
+      courseId: COURSE,
+      folderId: 1,
+      fileId: 999,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceNotFoundError);
+    expect(error.message).toMatch(/no attachment with id 999/i);
+    expect(error.message).toContain("spec.pdf (ID: 11)");
   });
 
   it("reports a missing assignment clearly", async () => {
-    const { call } = setup({ folders: [folder(1, "Lab 4", [])] });
+    const { ctx } = setup({ folders: [folder(1, "Lab 4", [])] });
 
-    const payload = parse(await call({ courseId: COURSE, folderId: 42 }));
-    expect(payload.error).toMatch(/no visible assignment with id 42/i);
+    await expect(getAssignmentFiles(ctx, { courseId: COURSE, folderId: 42 })).rejects.toBeInstanceOf(
+      BrightspaceNotFoundError
+    );
+    await expect(getAssignmentFiles(ctx, { courseId: COURSE, folderId: 42 })).rejects.toMatchObject({
+      message: expect.stringMatching(/no visible assignment with id 42/i),
+    });
   });
 
   it("requires folderId when fileId is given", async () => {
-    const { call } = setup({ folders: [folder(1, "Lab 4", [attachment(11, "a.pdf")])] });
+    const { ctx } = setup({ folders: [folder(1, "Lab 4", [attachment(11, "a.pdf")])] });
 
-    const payload = parse(await call({ courseId: COURSE, fileId: 11 }));
-    expect(payload.error).toMatch(/folderId is required/i);
+    await expect(getAssignmentFiles(ctx, { courseId: COURSE, fileId: 11 })).rejects.toBeInstanceOf(
+      BrightspaceInvalidArgumentError
+    );
+    await expect(getAssignmentFiles(ctx, { courseId: COURSE, fileId: 11 })).rejects.toMatchObject({
+      message: expect.stringMatching(/folderId is required/i),
+    });
   });
 });

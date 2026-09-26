@@ -1,11 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {
-  registerDownloadFile,
-  parseContentDispositionFilename,
-} from "../../src/tools/download-file.js";
+import { downloadFile, parseContentDispositionFilename } from "../../src/features/download.js";
+import type { FeatureContext } from "../../src/features/context.js";
+import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
 
 /**
  * download_file had no test of its own. Both of the things it gets from the
@@ -39,7 +38,7 @@ interface Setup {
 function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer() }: Setup) {
   const rawRequested: string[] = [];
 
-  const apiClient = {
+  const api = {
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (p: string) => (p.includes("/news/") ? newsItem : submissions)),
     getRaw: vi.fn(async (p: string) => {
@@ -56,20 +55,9 @@ function setup({ disposition, submissions, newsItem, contentLength, body = pdfBu
     }),
   };
 
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_n: string, _m: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerDownloadFile(server as any, apiClient as any);
-  return { call: (args: unknown) => handler!(args), rawRequested };
+  const ctx = { api, config: {} as any, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, rawRequested };
 }
-
-const parse = (result: any) => JSON.parse(result.content[0].text);
-const textOf = (result: any) =>
-  result.content.map((c: any) => c.text ?? "").join("\n");
 
 let root: string;
 let targetDir: string;
@@ -123,11 +111,13 @@ describe("parseContentDispositionFilename", () => {
   });
 });
 
-describe("download_file: filenames from Brightspace stay inside the download directory", () => {
+describe("downloadFile: filenames from Brightspace stay inside the download directory", () => {
   it("does not write above the download directory for a traversing Content-Disposition", async () => {
-    const { call } = setup({ disposition: 'attachment; filename="../../pwned.pdf"' });
+    const { ctx } = setup({ disposition: 'attachment; filename="../../pwned.pdf"' });
 
-    const result = await call({ courseId: COURSE, topicId: 7, downloadPath: targetDir });
+    const result = await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir }).catch(
+      (e) => e
+    );
 
     // Nothing may exist outside a/b, whether the download succeeded under a
     // sanitized name or was refused outright.
@@ -135,23 +125,22 @@ describe("download_file: filenames from Brightspace stay inside the download dir
     expect(written).not.toContain("pwned.pdf");
     expect(written).not.toContain("a/pwned.pdf");
 
-    if (!result.isError) {
-      const reported = parse(result).filePath as string;
+    if (!(result instanceof Error)) {
       expect(
-        path.resolve(reported).startsWith(path.resolve(targetDir) + path.sep)
+        path.resolve(result.filePath).startsWith(path.resolve(targetDir) + path.sep)
       ).toBe(true);
     }
   });
 
   it("does not write above the download directory for a traversing customFilename", async () => {
-    const { call } = setup({ disposition: 'attachment; filename="notes.pdf"' });
+    const { ctx } = setup({ disposition: 'attachment; filename="notes.pdf"' });
 
-    await call({
+    await downloadFile(ctx, {
       courseId: COURSE,
       topicId: 7,
       downloadPath: targetDir,
       customFilename: "../../custom.pdf",
-    });
+    }).catch(() => {});
 
     const written = await walk(root);
     expect(written).not.toContain("custom.pdf");
@@ -160,47 +149,46 @@ describe("download_file: filenames from Brightspace stay inside the download dir
 
   it("does not write into a subdirectory named by the remote filename", async () => {
     // path.join would happily aim at a/b/sub/nested.pdf, which does not exist,
-    // and the raw ENOENT surfaced as "An unexpected error occurred".
-    const { call } = setup({ disposition: 'attachment; filename="sub/nested.pdf"' });
+    // and the raw ENOENT used to surface as an opaque unexpected error.
+    const { ctx } = setup({ disposition: 'attachment; filename="sub/nested.pdf"' });
 
-    const result = await call({ courseId: COURSE, topicId: 7, downloadPath: targetDir });
+    const result = await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir }).catch(
+      (e) => e
+    );
 
-    expect(textOf(result)).not.toContain("An unexpected error occurred");
-    if (!result.isError) {
-      expect(path.dirname(parse(result).filePath)).toBe(targetDir);
+    if (result instanceof Error) {
+      expect(result.message).not.toContain("An unexpected error occurred");
+    } else {
+      expect(path.dirname(result.filePath)).toBe(targetDir);
     }
   });
 
   it("still saves an ordinary file under its own name and reports it", async () => {
-    const { call } = setup({ disposition: 'attachment; filename="Lecture 7.pdf"' });
+    const { ctx } = setup({ disposition: 'attachment; filename="Lecture 7.pdf"' });
 
-    const payload = parse(
-      await call({ courseId: COURSE, topicId: 7, downloadPath: targetDir })
-    );
+    const result = await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir });
 
-    expect(payload.success).toBe(true);
-    expect(payload.filePath).toBe(path.join(targetDir, "Lecture 7.pdf"));
-    expect(payload.originalFilename).toBe("Lecture 7.pdf");
-    expect(payload.mimeType).toBe("application/pdf");
-    expect(await fs.readFile(payload.filePath)).toHaveLength(521);
+    expect(result.success).toBe(true);
+    expect(result.filePath).toBe(path.join(targetDir, "Lecture 7.pdf"));
+    expect(result.originalFilename).toBe("Lecture 7.pdf");
+    expect(result.mimeType).toBe("application/pdf");
+    expect(await fs.readFile(result.filePath)).toHaveLength(521);
   });
 
   it("appends a counter rather than overwriting an existing file", async () => {
     await fs.writeFile(path.join(targetDir, "Lecture 7.pdf"), "already here");
-    const { call } = setup({ disposition: 'attachment; filename="Lecture 7.pdf"' });
+    const { ctx } = setup({ disposition: 'attachment; filename="Lecture 7.pdf"' });
 
-    const payload = parse(
-      await call({ courseId: COURSE, topicId: 7, downloadPath: targetDir })
-    );
+    const result = await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir });
 
-    expect(path.basename(payload.filePath)).toBe("Lecture 7(1).pdf");
+    expect(path.basename(result.filePath)).toBe("Lecture 7(1).pdf");
     expect(await fs.readFile(path.join(targetDir, "Lecture 7.pdf"), "utf-8")).toBe(
       "already here"
     );
   });
 });
 
-describe("download_file: dropbox submissions", () => {
+describe("downloadFile: dropbox submissions", () => {
   const submission = (id: number, files: unknown[]) => ({ Id: id, Files: files });
   const file = (fileId: number, fileName: string, size = 1024) => ({
     FileId: fileId,
@@ -212,63 +200,61 @@ describe("download_file: dropbox submissions", () => {
     // A resubmitted assignment answers with one entry per submission. Reading
     // only submissions[0] reported "not found" for a file the API had just
     // returned, and would have downloaded it under the wrong submission id.
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       submissions: [
         submission(900, [file(11, "draft.pdf")]),
         submission(901, [file(22, "final.pdf")]),
       ],
     });
 
-    const result = await call({
+    const result = await downloadFile(ctx, {
       courseId: COURSE,
       folderId: 5,
       fileId: 22,
       downloadPath: targetDir,
     });
 
-    expect(result.isError).toBeUndefined();
-    expect(parse(result).originalFilename).toBe("final.pdf");
+    expect(result.originalFilename).toBe("final.pdf");
     expect(rawRequested[0]).toContain("/submissions/901/files/22/download");
   });
 
   it("lists every submission's files when the id really is absent", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       submissions: [
         submission(900, [file(11, "draft.pdf")]),
         submission(901, [file(22, "final.pdf")]),
       ],
     });
 
-    const result = await call({
+    const error: Error = await downloadFile(ctx, {
       courseId: COURSE,
       folderId: 5,
       fileId: 99,
       downloadPath: targetDir,
-    });
+    }).catch((e) => e);
 
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain("draft.pdf");
-    expect(textOf(result)).toContain("final.pdf");
+    expect(error).toBeInstanceOf(BrightspaceNotFoundError);
+    expect(error.message).toContain("draft.pdf");
+    expect(error.message).toContain("final.pdf");
   });
 
   it("does not crash on a submission that carries no Files array", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       submissions: [submission(900, undefined as any), submission(901, [file(22, "final.pdf")])],
     });
 
-    const result = await call({
+    const result = await downloadFile(ctx, {
       courseId: COURSE,
       folderId: 5,
       fileId: 22,
       downloadPath: targetDir,
     });
 
-    expect(textOf(result)).not.toContain("An unexpected error occurred");
-    expect(parse(result).originalFilename).toBe("final.pdf");
+    expect(result.originalFilename).toBe("final.pdf");
   });
 });
 
-describe("download_file: announcement attachments", () => {
+describe("downloadFile: announcement attachments", () => {
   const newsItem = (attachments: unknown[]) => ({ Id: 55, Title: "Field notes", Attachments: attachments });
   const file = (fileId: number, fileName: string, size = 1024) => ({
     FileId: fileId,
@@ -277,73 +263,133 @@ describe("download_file: announcement attachments", () => {
   });
 
   it("saves the attachment under the download directory from the news attachment endpoint", async () => {
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       newsItem: newsItem([file(77, "prompts.pdf")]),
       disposition: 'attachment; filename="prompts.pdf"',
     });
 
-    const payload = parse(
-      await call({ courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir })
-    );
+    const result = await downloadFile(ctx, { courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir });
 
-    expect(payload.filePath).toBe(path.join(targetDir, "prompts.pdf"));
+    expect(result.filePath).toBe(path.join(targetDir, "prompts.pdf"));
     expect(rawRequested).toEqual(["/d2l/api/le/1.0/101/news/55/attachments/77"]);
   });
 
   it("does not write above the download directory for a traversing Content-Disposition", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       newsItem: newsItem([file(77, "prompts.pdf")]),
       disposition: 'attachment; filename="../../pwned.pdf"',
     });
 
-    await call({ courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir });
+    await downloadFile(ctx, { courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir }).catch(() => {});
 
     const written = await walk(root);
     expect(written.filter((f) => !f.startsWith("a/b/"))).toEqual([]);
   });
 
   it("refuses an attachment whose listed size is over the limit without downloading it", async () => {
-    const { call, rawRequested } = setup({
+    const { ctx, rawRequested } = setup({
       newsItem: newsItem([file(77, "huge.pdf", 200 * 1024 * 1024)]),
     });
 
-    const result = await call({ courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir });
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      newsId: 55,
+      fileId: 77,
+      downloadPath: targetDir,
+    }).catch((e) => e);
 
-    expect(textOf(result)).toContain("File too large");
+    expect(error.message).toContain("File too large");
     expect(rawRequested).toEqual([]);
   });
 
   it("refuses a download whose Content-Length is over the limit", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       newsItem: newsItem([file(77, "prompts.pdf")]),
       contentLength: 200 * 1024 * 1024,
     });
 
-    const result = await call({ courseId: COURSE, newsId: 55, fileId: 77, downloadPath: targetDir });
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      newsId: 55,
+      fileId: 77,
+      downloadPath: targetDir,
+    }).catch((e) => e);
 
-    expect(textOf(result)).toContain("File too large");
+    expect(error.message).toContain("File too large");
     expect(await walk(root)).toEqual([]);
   });
 
   it("names the announcement's files when the fileId is not one of them", async () => {
-    const { call } = setup({
+    const { ctx } = setup({
       newsItem: newsItem([file(77, "prompts.pdf"), file(78, "rubric.docx")]),
     });
 
-    const result = await call({ courseId: COURSE, newsId: 55, fileId: 99, downloadPath: targetDir });
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      newsId: 55,
+      fileId: 99,
+      downloadPath: targetDir,
+    }).catch((e) => e);
 
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain(
+    expect(error).toBeInstanceOf(BrightspaceNotFoundError);
+    expect(error.message).toContain(
       "File ID 99 not found on this announcement. Available files: prompts.pdf (ID: 77), rubric.docx (ID: 78)"
     );
   });
 
   it("asks for fileId when newsId is given alone", async () => {
-    const { call } = setup({ newsItem: newsItem([file(77, "prompts.pdf")]) });
+    const { ctx } = setup({ newsItem: newsItem([file(77, "prompts.pdf")]) });
 
-    const result = await call({ courseId: COURSE, newsId: 55, downloadPath: targetDir });
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      newsId: 55,
+      downloadPath: targetDir,
+    }).catch((e) => e);
 
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain("newsId and fileId");
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(error.message).toContain("newsId and fileId");
+  });
+});
+
+describe("downloadFile: downloadPath validation", () => {
+  it("requires an absolute downloadPath", async () => {
+    const { ctx } = setup({});
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      topicId: 7,
+      downloadPath: "relative/path",
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(error.message).toMatch(/absolute path/i);
+  });
+
+  it("rejects a downloadPath that does not exist", async () => {
+    const { ctx } = setup({});
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      topicId: 7,
+      downloadPath: path.join(root, "does-not-exist"),
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(error.message).toMatch(/does not exist/i);
+  });
+
+  it("rejects a downloadPath that is not a directory", async () => {
+    const filePath = path.join(root, "a-file");
+    await fs.writeFile(filePath, "x");
+    const { ctx } = setup({});
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      topicId: 7,
+      downloadPath: filePath,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(error.message).toMatch(/not a directory/i);
   });
 });
