@@ -146,4 +146,4 @@ export const GetRosterSchema = z.object({
     .describe("Maximum users to return. Default 100. The response reports the true total and whether it was truncated."),
 });
 
-export const GetServerInfoSchema = z.object({});
+export const GetInfoSchema = z.object({});
