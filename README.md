@@ -27,7 +27,8 @@ npm install brightspace-api
 Run the setup wizard once, from a terminal, to save your school URL and credentials:
 
 ```bash
-npx brightspace-setup
+npx brightspace-setup            # after npm install
+npx -y brightspace-api@latest setup   # without installing first
 ```
 
 Purdue students can add `--purdue` to skip entering the school URL; SUNY campuses can add
@@ -140,8 +141,10 @@ method's JSON result to stdout, and exits `0`.
 | `brightspace roster --course ID [--limit N]` | `getRoster` |
 | `brightspace emails --course ID` | `getClasslistEmails` |
 | `brightspace download --course ID (--topic ID \| --folder ID --file ID \| --news ID --file ID) --dir PATH [--name NAME]` | `downloadFile` |
-| `brightspace transcript --course ID --topic ID` | `getVideoTranscript` |
+| `brightspace transcript --course ID --topic ID` (or `--url URL`) | `getVideoTranscript` |
 | `brightspace info` | `getInfo` |
+| `brightspace auth` | sign in once (opens the MFA flow); same as `brightspace-auth` |
+| `brightspace setup` | save school and credentials; same as `brightspace-setup` |
 | `brightspace --help` / `<command> --help` | usage |
 
 Errors go to **stderr** as `{"error":{"code":…,"message":…}}`, and stdout carries only the
