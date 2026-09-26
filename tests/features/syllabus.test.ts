@@ -1,13 +1,18 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { getSyllabus } from "../../src/features/syllabus.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { ApiError } from "../../src/api/index.js";
+import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
 
 /**
  * The syllabus feature exposes the course overview as markdown and, when the
- * overview carries a PDF attachment, the text extracted from it. There is no
- * download-to-disk side effect here — a caller that wants the raw file uses
- * downloadFile.
+ * overview carries a PDF attachment, the text extracted from it. With
+ * downloadPath it also saves that attachment to disk — the overview
+ * attachment lives at /overview/attachment, a path downloadFile has no way
+ * to address, so this is the only place that can save it.
  */
 
 const COURSE_ID = 101;
@@ -134,5 +139,101 @@ describe("getSyllabus", () => {
 
     const result = await getSyllabus(ctx, { courseId: COURSE_ID });
     expect(result.hasAttachment).toBe(false);
+  });
+});
+
+describe("getSyllabus downloadPath", () => {
+  let root: string;
+  let targetDir: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "syllabus-"));
+    targetDir = path.join(root, "a", "b");
+    await fs.mkdir(targetDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  /** Everything that landed anywhere under root, relative to root. */
+  async function walk(dir: string, prefix = ""): Promise<string[]> {
+    const out: string[] = [];
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) out.push(...(await walk(path.join(dir, entry.name), rel)));
+      else out.push(rel);
+    }
+    return out;
+  }
+
+  it("saves the attachment and reports the saved path, size, and mime type", async () => {
+    const pdf = minimalPdf("Grading is 40 percent exams");
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { "Content-Disposition": 'attachment; filename="syllabus.pdf"' }, body: pdf },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir });
+
+    expect(result.download).toEqual({
+      success: true,
+      filePath: path.join(targetDir, "syllabus.pdf"),
+      fileSize: pdf.length,
+      mimeType: "application/pdf",
+    });
+    expect(await fs.readFile(path.join(targetDir, "syllabus.pdf"))).toEqual(pdf);
+  });
+
+  it("does not write outside the download directory for a path-traversal Content-Disposition filename", async () => {
+    const pdf = minimalPdf("irrelevant");
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { "Content-Disposition": 'attachment; filename="../../pwned.pdf"' }, body: pdf },
+    });
+
+    try {
+      await getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir });
+    } catch {
+      // Refusing outright is as acceptable as sanitizing the name; either way
+      // nothing may land outside targetDir.
+    }
+
+    const written = await walk(root);
+    expect(written).not.toContain("pwned.pdf");
+    expect(written).not.toContain("a/pwned.pdf");
+    for (const file of written) {
+      expect(file.startsWith("a/b/")).toBe(true);
+    }
+  });
+
+  it("throws BrightspaceInvalidArgumentError, and saves nothing, when the attachment is too large", async () => {
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { "Content-Length": String(60 * 1024 * 1024) }, body: Buffer.alloc(0) },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toBeInstanceOf(BrightspaceInvalidArgumentError);
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toMatchObject({
+      message: expect.stringMatching(/Attachment too large/),
+    });
+    expect(await walk(root)).toEqual([]);
+  });
+
+  it("validates the download directory before ever fetching anything", async () => {
+    const { ctx } = setup({ overview: { Description: null } });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: "relative/path" })).rejects.toBeInstanceOf(
+      BrightspaceInvalidArgumentError,
+    );
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: path.join(root, "does-not-exist") })).rejects.toBeInstanceOf(
+      BrightspaceInvalidArgumentError,
+    );
+  });
+
+  it("throws BrightspaceNotFoundError when downloadPath is given but there is no attachment", async () => {
+    const { ctx } = setup({ overview: { Description: null } });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toBeInstanceOf(BrightspaceNotFoundError);
   });
 });

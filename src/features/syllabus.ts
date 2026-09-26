@@ -5,12 +5,16 @@
  */
 
 import type { z } from "zod";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { ApiError, DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { GetSyllabusSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { MAX_FILE_SIZE } from "../utils/file-validator.js";
 import { extractPdfText } from "../utils/pdf-extractor.js";
+import { secureDownload } from "../utils/download-helpers.js";
+import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 import { log } from "../utils/logger.js";
 
 export type GetSyllabusArgs = z.input<typeof GetSyllabusSchema>;
@@ -18,6 +22,13 @@ export type GetSyllabusArgs = z.input<typeof GetSyllabusSchema>;
 // D2L Overview API response shape
 interface CourseOverview {
   Description: { Text: string; Html: string } | null;
+}
+
+export interface SyllabusDownload {
+  success: true;
+  filePath: string;
+  fileSize: number;
+  mimeType: string;
 }
 
 export interface SyllabusResult {
@@ -28,11 +39,46 @@ export interface SyllabusResult {
   totalPages?: number;
   message?: string;
   note?: string;
+  download?: SyllabusDownload;
 }
 
-/** The syllabus/overview text and, when a PDF attachment exists, its extracted text. */
+/**
+ * The same directory checks the seed tool ran before touching the network:
+ * an absolute path that already exists as a directory. Business conditions,
+ * so they throw BrightspaceInvalidArgumentError rather than propagate the
+ * raw fs error.
+ */
+async function validateDownloadDirectory(downloadPath: string): Promise<void> {
+  if (!path.isAbsolute(downloadPath)) {
+    throw new BrightspaceInvalidArgumentError([
+      "Download path must be an absolute path (e.g., /Users/username/Downloads on Mac or C:\\Users\\username\\Downloads on Windows)",
+    ]);
+  }
+  try {
+    const stats = await fs.stat(downloadPath);
+    if (!stats.isDirectory()) {
+      throw new BrightspaceInvalidArgumentError([`Download path is not a directory: ${downloadPath}`]);
+    }
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      throw new BrightspaceInvalidArgumentError([`Download directory does not exist: ${downloadPath}`]);
+    }
+    throw error;
+  }
+}
+
+/**
+ * The syllabus/overview text and, when a PDF attachment exists, its
+ * extracted text. With downloadPath, also saves the overview attachment to
+ * disk — the attachment lives at /overview/attachment, not on a content
+ * topic or a dropbox folder, so downloadFile has no way to reach it.
+ */
 export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): Promise<SyllabusResult> {
-  const { courseId } = GetSyllabusSchema.parse(args);
+  const { courseId, downloadPath } = GetSyllabusSchema.parse(args);
+
+  if (downloadPath !== undefined) {
+    await validateDownloadDirectory(downloadPath);
+  }
 
   let overview: CourseOverview | null = null;
   try {
@@ -53,11 +99,12 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
 
   const description = overview?.Description?.Html ? convertHtmlToMarkdown(overview.Description.Html).markdown : null;
 
-  // Always attempt to fetch the attachment so its PDF text can be extracted.
+  // Always attempt to fetch the attachment so its PDF text can be extracted
+  // (and so it is on hand to save, when downloadPath is given).
   let attachmentBuffer: Buffer | null = null;
   let attachmentFilename = "syllabus";
   let hasAttachment = false;
-  let note: string | undefined;
+  let tooLargeMessage: string | undefined;
 
   try {
     const response = await ctx.api.getRaw(ctx.api.le(courseId, "/overview/attachment"));
@@ -68,7 +115,7 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
       // Check Content-Length before downloading the body.
       const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
       if (contentLength > MAX_FILE_SIZE) {
-        note = `Attachment too large (${Math.round(contentLength / 1024 / 1024)}MB) to extract text from. Maximum: ${MAX_FILE_SIZE / 1024 / 1024}MB.`;
+        tooLargeMessage = `Attachment too large (${Math.round(contentLength / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`;
       } else {
         // Get filename from Content-Disposition header.
         const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -79,7 +126,7 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
 
         const buffer = Buffer.from(await response.arrayBuffer());
         if (buffer.length > MAX_FILE_SIZE) {
-          note = `Attachment too large (${Math.round(buffer.length / 1024 / 1024)}MB) to extract text from. Maximum: ${MAX_FILE_SIZE / 1024 / 1024}MB.`;
+          tooLargeMessage = `Attachment too large (${Math.round(buffer.length / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`;
         } else {
           attachmentBuffer = buffer;
         }
@@ -91,6 +138,16 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
     } else {
       log("DEBUG", "Could not fetch syllabus attachment", error);
     }
+  }
+
+  // A caller asking to save the file needs to know nothing was written;
+  // a caller only reading text is fine with a note instead of a hard stop.
+  let note: string | undefined;
+  if (tooLargeMessage) {
+    if (downloadPath !== undefined) {
+      throw new BrightspaceInvalidArgumentError([tooLargeMessage]);
+    }
+    note = tooLargeMessage;
   }
 
   // Extract text from PDF attachment if available.
@@ -114,5 +171,27 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
     result.hasAttachment = hasAttachment;
   }
   if (note) result.note = note;
+
+  if (downloadPath !== undefined) {
+    if (!attachmentBuffer) {
+      throw new BrightspaceNotFoundError("No attachment found for this course's syllabus.");
+    }
+    // A DownloadError (bad filename, path traversal, unsupported or
+    // undetectable type) propagates untouched, same as any other business
+    // condition the download helpers themselves throw.
+    const saved = await secureDownload({
+      targetDir: downloadPath,
+      filename: attachmentFilename,
+      data: attachmentBuffer,
+    });
+    log("INFO", `Syllabus attachment downloaded: ${saved.path} (${saved.size} bytes)`);
+    result.download = {
+      success: true,
+      filePath: saved.path,
+      fileSize: saved.size,
+      mimeType: saved.mime,
+    };
+  }
+
   return result;
 }
