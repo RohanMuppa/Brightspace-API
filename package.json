@@ -12,6 +12,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "brightspace": "build/cli.js",
+    "brightspace-api": "build/cli.js",
     "brightspace-auth": "build/auth-cli.js",
     "brightspace-setup": "build/setup.js"
   },
