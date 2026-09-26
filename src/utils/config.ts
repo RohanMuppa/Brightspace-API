@@ -13,7 +13,17 @@ import { configStoreExists, loadConfigStore } from "./config-store.js";
 import { resolveStoredPassword } from "./secure-config.js";
 import { migrateLegacyState } from "../auth/legacy-state.js";
 
-export async function loadConfig(): Promise<AppConfig> {
+export interface LoadConfigOptions {
+  /**
+   * Treat an unavailable native credential store as "no stored password"
+   * (logged as a warning) instead of an error. Right for a read-only client:
+   * a saved session needs no password, and a cron host often has no desktop
+   * keyring. Wrong for setup and auth, which exist to use that store.
+   */
+  tolerateCredentialStore?: boolean;
+}
+
+export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppConfig> {
   dotenv.config({ quiet: true });
   const store = configStoreExists() ? loadConfigStore() : null;
 
@@ -62,7 +72,7 @@ export async function loadConfig(): Promise<AppConfig> {
   }
   const baseUrl = configuredUrl.origin;
   const username = process.env.D2L_USERNAME || store?.username;
-  const password = await resolveStoredPassword(baseUrl, username, store);
+  const password = await resolveStoredPassword(baseUrl, username, store, options.tolerateCredentialStore === true);
   // A new account must never inherit another account's cookies, even at the same school.
   const sessionDir = accountSessionDirectory(sessionRoot, baseUrl, username);
   const legacyMigration = sessionDir !== sessionRoot ? await migrateLegacyState(sessionRoot) : undefined;

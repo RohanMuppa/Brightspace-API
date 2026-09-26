@@ -3,6 +3,7 @@ import { z } from "zod";
 import { toPublicError, BrightspaceError } from "../../src/errors.js";
 import { ApiError, RateLimitError, NetworkError, TokenRefreshError } from "../../src/api/errors.js";
 import { AuthProcessError } from "../../src/auth/auth-runner.js";
+import { NativeCredentialStoreError } from "../../src/auth/credential-store.js";
 import { DownloadError } from "../../src/utils/download-errors.js";
 import { NoTranscriptError, TranscriptFetchError } from "../../src/utils/transcript/errors.js";
 
@@ -125,6 +126,13 @@ describe("toPublicError", () => {
     expect(error.code).toBe("BRIGHTSPACE_NETWORK");
     expect(error.name).toBe("BrightspaceNetworkError");
     expect(error.message).not.toContain(SECRET);
+  });
+
+  it("maps NativeCredentialStoreError to a secureStorage BrightspaceAuthFailedError", () => {
+    const mapped = toPublicError(new NativeCredentialStoreError("secret-tool missing on this host"));
+    expect(mapped.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((mapped as { kind?: string }).kind).toBe("secureStorage");
+    expect(mapped.message).not.toContain("secret-tool missing");
   });
 
   it("maps anything unrecognized to BrightspaceError BRIGHTSPACE_UNEXPECTED", () => {

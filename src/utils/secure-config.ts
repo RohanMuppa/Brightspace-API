@@ -1,4 +1,5 @@
-import { getStoredPassword, setStoredPassword } from "../auth/credential-store.js";
+import { getStoredPassword, setStoredPassword, NativeCredentialStoreError } from "../auth/credential-store.js";
+import { log } from "./logger.js";
 import * as path from "node:path";
 import { acquireProcessLock } from "../auth/auth-lock.js";
 import { configStoreExists, getConfigStorePath, loadConfigStore, saveConfigStore, type ConfigStoreData } from "./config-store.js";
@@ -38,8 +39,27 @@ async function saveSecureConfigUnlocked(config: ConfigStoreData): Promise<void> 
   saveConfigStore(publicConfig);
 }
 
-/** Migrate a v1 password under its own account, before resolving environment overrides. */
+/**
+ * Migrate a v1 password under its own account, before resolving environment
+ * overrides. With `tolerateUnavailable`, an unreachable native credential
+ * store yields no password (a warning is logged) rather than an error.
+ */
 export async function resolveStoredPassword(
+  baseUrl: string,
+  username: string | undefined,
+  store: ConfigStoreData | null,
+  tolerateUnavailable = false,
+): Promise<string | undefined> {
+  try {
+    return await resolveStoredPasswordStrict(baseUrl, username, store);
+  } catch (error) {
+    if (!tolerateUnavailable || !(error instanceof NativeCredentialStoreError)) throw error;
+    log("WARN", "The native credential store is unavailable; continuing without a stored password. Saved sessions still work; automatic sign-in will not.");
+    return undefined;
+  }
+}
+
+async function resolveStoredPasswordStrict(
   baseUrl: string,
   username: string | undefined,
   store: ConfigStoreData | null,

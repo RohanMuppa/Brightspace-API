@@ -7,6 +7,7 @@
 import { ZodError } from "zod";
 import { ApiError, RateLimitError, NetworkError, TokenRefreshError } from "./api/errors.js";
 import { AuthProcessError, type AuthFailureKind } from "./auth/auth-runner.js";
+import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { DownloadError, isSafeDetail, type DownloadFailureKind } from "./utils/download-errors.js";
 import { NoTranscriptError, TranscriptFetchError } from "./utils/transcript/errors.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
@@ -180,6 +181,10 @@ export function toPublicError(error: unknown): BrightspaceError {
   if (error instanceof AuthProcessError) {
     if (error.kind === "mfaPending") return new BrightspaceMfaPendingError(error.numberMatch);
     return new BrightspaceAuthFailedError(error.kind, AUTH_FAILURE_GUIDANCE[error.kind]);
+  }
+
+  if (error instanceof NativeCredentialStoreError) {
+    return new BrightspaceAuthFailedError("secureStorage", AUTH_FAILURE_GUIDANCE.secureStorage);
   }
 
   // Checked before NetworkError, which it extends: a token service that is

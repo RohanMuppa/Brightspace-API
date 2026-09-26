@@ -72,7 +72,7 @@ export interface BrightspaceClientOptions {
 export async function createBrightspaceClient(options: BrightspaceClientOptions = {}): Promise<BrightspaceClient> {
   setLogLevel(options.logLevel ?? "WARN");
 
-  const config = options.config ?? (await loadConfig());
+  const config = options.config ?? (await loadConfig({ tolerateCredentialStore: true }));
   const tokenManager = new TokenManager({
     sessionDir: config.sessionDir,
     baseUrl: config.baseUrl,
