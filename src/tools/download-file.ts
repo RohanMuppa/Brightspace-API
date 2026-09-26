@@ -6,7 +6,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient } from "../api/index.js";
-import { DownloadFileSchema } from "./schemas.js";
+import { DownloadFileSchema } from "../features/schemas.js";
 import { toolResponse, sanitizeError, errorResponse } from "./tool-helpers.js";
 import { log } from "../utils/logger.js";
 // Path containment and magic-byte checks belong to secureDownload, which both

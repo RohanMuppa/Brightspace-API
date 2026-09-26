@@ -1,14 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { registerGetMyCourses } from "../../src/tools/get-my-courses.js";
+import { getMyCourses } from "../../src/features/courses.js";
+import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
 
 /**
- * Regression tests for how get_my_courses resolves activeOnly.
- *
- * The tool argument shapes the myenrollments query string, but the fetched rows
- * are then run through applyCourseFilter. If that filter keeps using the global
- * config value, passing activeOnly:false fetches inactive courses and throws them
- * away again — the argument silently does nothing.
+ * activeOnly resolution: the argument shapes the myenrollments query string,
+ * and the fetched rows then pass through applyCourseFilter. Both must use the
+ * same resolved value, or activeOnly:false fetches inactive courses and throws
+ * them away again.
  */
 
 const COURSES = [
@@ -26,10 +25,9 @@ function makeConfig(activeOnly: boolean): AppConfig {
   } as AppConfig;
 }
 
-/** Captures the registered handler and the paths it requests. */
 function setup(config: AppConfig) {
   const requested: string[] = [];
-  const apiClient = {
+  const api = {
     lp: (p: string) => `/d2l/api/lp/1.0${p}`,
     get: vi.fn(async (path: string) => {
       requested.push(path);
@@ -38,31 +36,18 @@ function setup(config: AppConfig) {
       return {
         Items: items.map((c) => ({
           OrgUnit: { Id: c.id, Name: c.name, Code: c.code },
-          Access: {
-            ClasslistRoleName: "Instructor",
-            IsActive: c.isActive,
-            LastAccessed: null,
-          },
+          Access: { ClasslistRoleName: "Instructor", IsActive: c.isActive, LastAccessed: null },
         })),
       };
     }),
   };
-
-  let handler: (args: unknown) => Promise<any>;
-  const server = {
-    registerTool: (_name: string, _meta: unknown, fn: (args: unknown) => Promise<any>) => {
-      handler = fn;
-    },
-  };
-
-  registerGetMyCourses(server as any, apiClient as any, config);
-  return { call: (args: unknown) => handler!(args), requested };
+  const ctx = { api, config, version: "0.0.0-test" } as unknown as FeatureContext;
+  return { ctx, requested };
 }
 
-const idsOf = (result: any): number[] =>
-  JSON.parse(result.content[0].text).map((c: { id: number }) => c.id);
+const idsOf = (courses: Array<{ id: number }>) => courses.map((c) => c.id);
 
-describe("get_my_courses activeOnly resolution", () => {
+describe("getMyCourses activeOnly resolution", () => {
   let config: AppConfig;
 
   beforeEach(() => {
@@ -70,45 +55,46 @@ describe("get_my_courses activeOnly resolution", () => {
   });
 
   it("returns inactive courses when the caller passes activeOnly:false", async () => {
-    const { call, requested } = setup(config);
-
-    const result = await call({ activeOnly: false });
-
+    const { ctx, requested } = setup(config);
+    const result = await getMyCourses(ctx, { activeOnly: false });
     expect(requested[0]).not.toContain("isActive=true");
     expect(idsOf(result)).toEqual([15853, 319544]);
   });
 
   it("filters to active courses when the caller passes activeOnly:true", async () => {
-    const { call, requested } = setup(config);
-
-    const result = await call({ activeOnly: true });
-
+    const { ctx, requested } = setup(config);
+    const result = await getMyCourses(ctx, { activeOnly: true });
     expect(requested[0]).toContain("isActive=true");
     expect(idsOf(result)).toEqual([15853]);
   });
 
   it("falls back to the configured policy when the argument is omitted", async () => {
-    const { call } = setup(makeConfig(false));
-
-    const result = await call({});
-
-    expect(idsOf(result)).toEqual([15853, 319544]);
+    const { ctx } = setup(makeConfig(false));
+    expect(idsOf(await getMyCourses(ctx))).toEqual([15853, 319544]);
   });
 
   it("honours a configured activeOnly:true when the argument is omitted", async () => {
-    const { call } = setup(makeConfig(true));
+    const { ctx } = setup(makeConfig(true));
+    expect(idsOf(await getMyCourses(ctx, {}))).toEqual([15853]);
+  });
 
-    const result = await call({});
-
-    expect(idsOf(result)).toEqual([15853]);
+  it("returns plain objects with the documented fields", async () => {
+    const { ctx } = setup(makeConfig(true));
+    const [course] = await getMyCourses(ctx);
+    expect(course).toEqual({
+      id: 15853,
+      name: "Sandbox",
+      code: "sandbox",
+      role: "Instructor",
+      isActive: true,
+      canAccess: undefined,
+      lastAccessed: null,
+    });
   });
 });
 
-/**
- * Enrollments arrive one page at a time. Reading only the first page used to
- * drop every course after it and log a warning in place of the data.
- */
-describe("get_my_courses pagination", () => {
+/** Enrollments arrive one page at a time; every page must be read. */
+describe("getMyCourses pagination", () => {
   it("returns courses from every page of enrollments", async () => {
     const requested: string[] = [];
     const page = (id: number, bookmark?: string) => ({
@@ -120,24 +106,16 @@ describe("get_my_courses pagination", () => {
       ],
       PagingInfo: { HasMoreItems: bookmark !== undefined, Bookmark: bookmark ?? "" },
     });
-
-    const apiClient = {
+    const api = {
       lp: (p: string) => `/d2l/api/lp/1.0${p}`,
       get: vi.fn(async (path: string) => {
         requested.push(path);
         return path.includes("bookmark=b1") ? page(2) : page(1, "b1");
       }),
     };
+    const ctx = { api, config: makeConfig(true), version: "0.0.0-test" } as unknown as FeatureContext;
 
-    let handler: (args: unknown) => Promise<any>;
-    const server = {
-      registerTool: (_n: string, _m: unknown, fn: (args: unknown) => Promise<any>) => {
-        handler = fn;
-      },
-    };
-    registerGetMyCourses(server as any, apiClient as any, makeConfig(true));
-
-    const result = await handler!({});
+    const result = await getMyCourses(ctx);
 
     expect(idsOf(result)).toEqual([1, 2]);
     expect(requested).toHaveLength(2);

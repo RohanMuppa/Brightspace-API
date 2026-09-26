@@ -6,7 +6,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
-import { GetCourseContentSchema } from "./schemas.js";
+import { GetCourseContentSchema } from "../features/schemas.js";
 import { toolResponse, sanitizeError } from "./tool-helpers.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { matchesModifiedSince } from "../utils/modified-since.js";

@@ -6,7 +6,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
-import { GetVideoTranscriptSchema } from "./schemas.js";
+import { GetVideoTranscriptSchema } from "../features/schemas.js";
 import { toolResponse, errorResponse, sanitizeError } from "./tool-helpers.js";
 import { cuesToText, paginateText } from "../utils/transcript/captions.js";
 import {

@@ -7,7 +7,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AppConfig } from "../types/index.js";
 import { getConfigStorePath } from "../utils/config-store.js";
-import { GetServerInfoSchema } from "./schemas.js";
+import { GetServerInfoSchema } from "../features/schemas.js";
 import { toolResponse } from "./tool-helpers.js";
 
 /**

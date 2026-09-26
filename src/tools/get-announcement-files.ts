@@ -6,9 +6,9 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
-import { GetAnnouncementFilesSchema } from "./schemas.js";
+import { GetAnnouncementFilesSchema } from "../features/schemas.js";
 import { toolResponse, sanitizeError } from "./tool-helpers.js";
-import { describeAttachment, readAttachment } from "./attachment-reader.js";
+import { describeAttachment, readAttachment } from "../features/attachment-reader.js";
 import { effectiveDate, isPublishedNewsItem, type NewsItem } from "./get-announcements.js";
 import { log } from "../utils/logger.js";
 

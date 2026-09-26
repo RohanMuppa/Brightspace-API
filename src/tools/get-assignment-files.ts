@@ -6,17 +6,17 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
-import { GetAssignmentFilesSchema } from "./schemas.js";
+import { GetAssignmentFilesSchema } from "../features/schemas.js";
 import { toolResponse, sanitizeError } from "./tool-helpers.js";
 import {
   describeAttachment,
   readAttachment,
   type D2LFileAttachment,
-} from "./attachment-reader.js";
+} from "../features/attachment-reader.js";
 import { assignmentUrl } from "../utils/deep-links.js";
 import { log } from "../utils/logger.js";
 
-export { fileKind } from "./attachment-reader.js";
+export { fileKind } from "../features/attachment-reader.js";
 
 /**
  * The files an instructor attached to an assignment: the spec PDF, the starter
