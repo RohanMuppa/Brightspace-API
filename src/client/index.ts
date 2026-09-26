@@ -16,6 +16,16 @@ import { toPublicError } from "../errors.js";
 import type { AppConfig, LogLevel } from "../types/index.js";
 import type { FeatureContext } from "../features/context.js";
 import { getMyCourses } from "../features/courses.js";
+import { getMyGrades, type GetMyGradesArgs, type CourseGrades } from "../features/grades.js";
+import { getUpcomingDueDates, type GetUpcomingDueDatesArgs, type UpcomingItem } from "../features/due-dates.js";
+import { getInfo, type ClientInfo } from "../features/info.js";
+import { getAssignments, type GetAssignmentsArgs, type AssignmentsResult } from "../features/assignments.js";
+import { getAssignmentFiles, type GetAssignmentFilesArgs, type AssignmentFilesResult } from "../features/assignment-files.js";
+import { downloadFile, type DownloadFileArgs, type DownloadResult } from "../features/download.js";
+import { getDiscussions, type GetDiscussionsArgs, type DiscussionsResult } from "../features/discussions.js";
+import { getRoster, type GetRosterArgs, type RosterResult } from "../features/roster.js";
+import { getClasslistEmails, type GetClasslistEmailsArgs, type ClasslistEmailsResult } from "../features/classlist-emails.js";
+import { getVideoTranscript, type GetVideoTranscriptArgs, type VideoTranscriptResult } from "../features/transcript.js";
 import type { Course, GetMyCoursesArgs } from "../features/courses.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -104,7 +114,7 @@ export class BrightspaceClient {
    * this client's context and map whatever it throws to the public error
    * contract. Kept here so each method below stays trivial.
    */
-  private async run<Args, Result>(fn: (ctx: FeatureContext, args?: Args) => Promise<Result>, args?: Args): Promise<Result> {
+  private async run<Args, Result>(fn: (ctx: FeatureContext, args: Args) => Promise<Result>, args: Args): Promise<Result> {
     try {
       return await fn(this.ctx, args);
     } catch (e) {
@@ -116,5 +126,45 @@ export class BrightspaceClient {
     return this.run(getMyCourses, args);
   }
 
-  // ── #7 adds the other fourteen methods here, each one line via `this.run` ──
+  getUpcomingDueDates(args?: GetUpcomingDueDatesArgs): Promise<UpcomingItem[]> {
+    return this.run(getUpcomingDueDates, args);
+  }
+
+  getMyGrades(args?: GetMyGradesArgs): Promise<CourseGrades[]> {
+    return this.run(getMyGrades, args);
+  }
+
+  getAssignments(args?: GetAssignmentsArgs): Promise<AssignmentsResult> {
+    return this.run(getAssignments, args);
+  }
+
+  getAssignmentFiles(args: GetAssignmentFilesArgs): Promise<AssignmentFilesResult> {
+    return this.run(getAssignmentFiles, args);
+  }
+
+  downloadFile(args: DownloadFileArgs): Promise<DownloadResult> {
+    return this.run(downloadFile, args);
+  }
+
+  getClasslistEmails(args: GetClasslistEmailsArgs): Promise<ClasslistEmailsResult> {
+    return this.run(getClasslistEmails, args);
+  }
+
+  getRoster(args: GetRosterArgs): Promise<RosterResult> {
+    return this.run(getRoster, args);
+  }
+
+  getDiscussions(args: GetDiscussionsArgs): Promise<DiscussionsResult> {
+    return this.run(getDiscussions, args);
+  }
+
+  getVideoTranscript(args: GetVideoTranscriptArgs): Promise<VideoTranscriptResult> {
+    return this.run(getVideoTranscript, args);
+  }
+
+  getInfo(): Promise<ClientInfo> {
+    return this.run(getInfo, undefined);
+  }
+
+  // ── #7 adds getAnnouncements, getAnnouncementFiles, getCourseContent, getSyllabus here ──
 }
