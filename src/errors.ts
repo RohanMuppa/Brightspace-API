@@ -162,6 +162,7 @@ const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {
   badFilename: "The name Brightspace gave this file cannot be used on disk. Pass customFilename to choose one yourself.",
   pathTraversal:
     "The name Brightspace gave this file pointed outside the download directory and was refused. Pass customFilename to choose one yourself.",
+  tooLarge: "The file exceeds the download size limit and was not saved.",
 };
 
 /**

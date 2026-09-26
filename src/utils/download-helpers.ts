@@ -7,6 +7,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { validateDownloadPath, validateFileType, MAX_FILE_SIZE } from "./file-validator.js";
+import { DownloadError } from "./download-errors.js";
 import { log } from "./logger.js";
 
 /**
@@ -84,7 +85,8 @@ export async function secureDownload(options: {
   // Validate file size
   const size = data.byteLength;
   if (size > MAX_FILE_SIZE) {
-    throw new Error(
+    throw new DownloadError(
+      "tooLarge",
       `File size (${size} bytes) exceeds maximum allowed (${MAX_FILE_SIZE} bytes)`
     );
   }

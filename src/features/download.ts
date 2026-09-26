@@ -14,6 +14,7 @@ import { log } from "../utils/logger.js";
 // download paths below go through; importing them here only made it look as
 // though this module validated anything itself.
 import { MAX_FILE_SIZE } from "../utils/file-validator.js";
+import { DownloadError } from "../utils/download-errors.js";
 import { secureDownload } from "../utils/download-helpers.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 
@@ -119,7 +120,7 @@ async function downloadContentFile(
   // Check Content-Length BEFORE downloading body (prevent memory exhaustion)
   const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
   if (contentLength > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(contentLength));
+    throw new DownloadError("tooLarge", oversizeMessage(contentLength));
   }
 
   const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -130,7 +131,7 @@ async function downloadContentFile(
 
   // Double-check actual size
   if (buffer.length > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(buffer.length));
+    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
   }
 
   const originalFilename = filename;
@@ -212,7 +213,7 @@ async function downloadSubmissionFile(
 
   // Check file size before downloading
   if (file.Size > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(file.Size));
+    throw new DownloadError("tooLarge", oversizeMessage(file.Size));
   }
 
   // D2L file download URL pattern for submission files
@@ -226,7 +227,7 @@ async function downloadSubmissionFile(
 
   // Double-check actual size
   if (buffer.length > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(buffer.length));
+    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
   }
 
   const originalFilename = file.FileName;
@@ -282,7 +283,7 @@ async function downloadNewsAttachment(
   }
 
   if (file.Size > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(file.Size));
+    throw new DownloadError("tooLarge", oversizeMessage(file.Size));
   }
 
   // GET /d2l/api/le/(version)/(orgUnitId)/news/(newsItemId)/attachments/(fileId)
@@ -291,7 +292,7 @@ async function downloadNewsAttachment(
   // Check Content-Length BEFORE downloading body (prevent memory exhaustion)
   const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
   if (contentLength > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(contentLength));
+    throw new DownloadError("tooLarge", oversizeMessage(contentLength));
   }
 
   const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -301,7 +302,7 @@ async function downloadNewsAttachment(
 
   // Double-check actual size
   if (buffer.length > MAX_FILE_SIZE) {
-    throw new Error(oversizeMessage(buffer.length));
+    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
   }
 
   const originalFilename = filename;
