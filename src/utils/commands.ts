@@ -15,7 +15,7 @@
  * source for untagged forms and fails the build if one reappears.
  */
 
-export const PACKAGE_NAME = "brightspace-mcp-server";
+export const PACKAGE_NAME = "brightspace-api";
 
 /** Re-authenticate. Always runs the current published release. */
 export const AUTH_COMMAND = `npx -y ${PACKAGE_NAME}@latest auth`;

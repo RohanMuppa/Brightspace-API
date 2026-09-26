@@ -1,12 +1,17 @@
 {
-  "name": "brightspace-mcp-server",
-  "version": "3.6.1",
-  "mcpName": "io.github.rohanmuppa/brightspace",
-  "description": "MCP server for Brightspace (D2L). Check grades, due dates, assignments, announcements, syllabus, rosters and more via Claude, ChatGPT, Cursor, Windsurf, or any MCP client.",
+  "name": "brightspace-api",
+  "version": "0.1.0",
+  "description": "Documented, read-only, programmatic client for D2L Brightspace. Scripts and scheduled jobs import it directly to read courses, grades, due dates, assignments, announcements, syllabus, rosters, and more.",
   "type": "module",
   "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "exports": {
+    ".": "./build/index.js",
+    "./errors": "./build/errors.js",
+    "./auth": "./build/auth/index.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "brightspace-mcp-server": "build/index.js",
     "brightspace-auth": "build/auth-cli.js",
     "brightspace-setup": "build/setup.js"
   },
@@ -18,7 +23,6 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "start": "node build/index.js",
     "auth": "node build/auth-cli.js",
     "update": "node build/update.js",
     "dev": "tsc --watch",
@@ -27,7 +31,6 @@
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
     "@napi-rs/keyring": "^2.0.0",
     "dotenv": "^17.2.4",
     "file-type": "^21.3.0",
@@ -39,6 +42,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "@types/node": "^22.0.0",
     "@types/sanitize-filename": "^1.1.28",
     "@types/turndown": "^5.0.6",

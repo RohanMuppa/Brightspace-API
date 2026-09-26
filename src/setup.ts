@@ -8,9 +8,7 @@
  */
 
 import * as readline from "node:readline";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -19,14 +17,8 @@ import {
   loadConfigStore,
 } from "./utils/config-store.js";
 import { saveSecureConfig } from "./utils/secure-config.js";
-import { writeFileAtomicSync } from "./utils/atomic-write.js";
 import type { ConfigStoreData } from "./utils/config-store.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
-import {
-  cliMcpClients,
-  configureCliMcpClient,
-  isCliAvailable,
-} from "./utils/mcp-client-cli.js";
 
 // ANSI helpers
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -197,129 +189,6 @@ function isValidUrl(url: string): boolean {
   } catch {
     return false;
   }
-}
-
-// ── Claude Desktop / Cursor config ────────────────────────────────
-
-interface McpConfig {
-  mcpServers?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-function getClaudeDesktopConfigPath(): string | null {
-  const platform = os.platform();
-  if (platform === "darwin") {
-    return path.join(
-      os.homedir(),
-      "Library",
-      "Application Support",
-      "Claude",
-      "claude_desktop_config.json",
-    );
-  }
-  if (platform === "win32") {
-    const appdata = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-    return path.join(appdata, "Claude", "claude_desktop_config.json");
-  }
-  if (platform === "linux") {
-    return path.join(os.homedir(), ".config", "Claude", "claude_desktop_config.json");
-  }
-  return null;
-}
-
-function isChatGPTInstalled(): boolean {
-  const platform = os.platform();
-  if (platform === "darwin") {
-    return (
-      fs.existsSync("/Applications/ChatGPT.app") ||
-      fs.existsSync(path.join(os.homedir(), "Applications", "ChatGPT.app"))
-    );
-  }
-  if (platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-    return fs.existsSync(path.join(localAppData, "Programs", "ChatGPT", "ChatGPT.exe"));
-  }
-  return false;
-}
-
-function getCursorConfigPath(): string {
-  return path.join(os.homedir(), ".cursor", "mcp.json");
-}
-
-/**
- * A JSON value we can safely merge a server entry into. An array passes
- * `typeof x === "object"` but drops every added key when it is stringified
- * again, so it has to be rejected alongside `null`.
- */
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function configureMcpClient(configPath: string): boolean {
-  let config: McpConfig = {};
-
-  // Read existing config if present
-  if (fs.existsSync(configPath)) {
-    let parsed: unknown;
-    let readable = true;
-    try {
-      parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    } catch {
-      readable = false;
-    }
-    if (isJsonObject(parsed)) {
-      config = parsed as McpConfig;
-    } else {
-      // Unparseable, or valid JSON that is not an object (null, an array, a
-      // bare string). Merging into it would either throw or silently discard
-      // the entry we just reported as written, so start fresh and say so.
-      console.log(yellow(`  Warning: existing config was ${readable ? "not a JSON object" : "invalid"}, creating new one.`));
-      config = {};
-    }
-  }
-
-  // Same reasoning for the servers map itself, which is hand-edited far more
-  // often than the file around it.
-  const servers: Record<string, unknown> = isJsonObject(config.mcpServers) ? config.mcpServers : {};
-  config.mcpServers = servers;
-
-  // Add/update brightspace entry
-  // On Windows, npx is a .cmd shim that must be invoked through cmd.exe
-  const isWindows = process.platform === "win32";
-  servers["brightspace"] = isWindows
-    ? {
-        command: "cmd",
-        args: ["/c", "npx", "-y", "brightspace-mcp-server@latest"],
-      }
-    : {
-        command: "npx",
-        args: ["-y", "brightspace-mcp-server@latest"],
-      };
-
-  // Ensure parent directory exists
-  const dir = path.dirname(configPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  // This file holds every MCP server the user has configured, not just ours.
-  // A plain write truncates it first, so a write that fails part way through
-  // (a full disk, an I/O error) would leave the user with no MCP servers at
-  // all. Staging and renaming leaves either the old file or the new one.
-  // The existing permissions are carried over, since the rename would
-  // otherwise replace them with the umask default.
-  let mode: number | undefined;
-  try {
-    if (fs.existsSync(configPath)) mode = fs.statSync(configPath).mode & 0o777;
-  } catch {
-    // Unreadable metadata is not a reason to skip the write.
-  }
-  writeFileAtomicSync(
-    configPath,
-    JSON.stringify(config, null, 2) + "\n",
-    mode === undefined ? {} : { mode },
-  );
-  return true;
 }
 
 // ── Saved settings ─────────────────────────────────────────────────
@@ -499,12 +368,11 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // Re-open readline for remaining prompts
-  let rl2 = readline.createInterface({
+  // Re-open readline for the remaining prompt
+  const rl2 = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
-  const configuredClients: string[] = [];
 
   // ── Step 4: MFA info ─────────────────────────────────────────────
   if (preset) {
@@ -554,13 +422,12 @@ async function main(): Promise<void> {
 
   // ── Step 6: Authenticate now? ────────────────────────────────────
   const authNow = await ask(rl2, "Would you like to authenticate now? (yes/no): ");
+  rl2.close();
   if (/^y(es)?$/i.test(authNow)) {
-    rl2.close();
     console.log("");
     console.log(dim("  Starting authentication..."));
     console.log("");
     const ok = await runAuth();
-    rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
     if (ok) {
       console.log(green("\n  Authentication successful!"));
     } else {
@@ -571,103 +438,14 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // ── Step 7: Claude Desktop auto-config ───────────────────────────
-  const claudePath = getClaudeDesktopConfigPath();
-  if (claudePath) {
-    const configClaude = await ask(
-      rl2,
-      "Would you like to automatically configure Claude Desktop? (yes/no): ",
-    );
-    if (/^y(es)?$/i.test(configClaude)) {
-      try {
-        configureMcpClient(claudePath);
-        configuredClients.push("Claude Desktop");
-        console.log(green("  Claude Desktop configured! Restart Claude Desktop to connect."));
-      } catch (err) {
-        console.log(
-          yellow(`  Could not configure Claude Desktop: ${err instanceof Error ? err.message : String(err)}`),
-        );
-      }
-    }
-    console.log("");
-  }
-
-  // ── Step 8: Cursor auto-config ───────────────────────────────────
-  const cursorPath = getCursorConfigPath();
-  const cursorExists = fs.existsSync(path.dirname(cursorPath));
-  if (cursorExists) {
-    const configCursor = await ask(
-      rl2,
-      "Cursor detected. Would you like to configure it too? (yes/no): ",
-    );
-    if (/^y(es)?$/i.test(configCursor)) {
-      try {
-        configureMcpClient(cursorPath);
-        configuredClients.push("Cursor");
-        console.log(green("  Cursor configured! Restart Cursor to connect."));
-      } catch (err) {
-        console.log(
-          yellow(`  Could not configure Cursor: ${err instanceof Error ? err.message : String(err)}`),
-        );
-      }
-    }
-    console.log("");
-  }
-
-  // ── Step 9: Codex and Claude Code auto-config ─────────────────────
-  for (const client of cliMcpClients()) {
-    if (!isCliAvailable(client)) continue;
-
-    const configureClient = await ask(
-      rl2,
-      `${client.displayName} detected. Configure it automatically? (yes/no): `,
-    );
-    if (/^y(es)?$/i.test(configureClient)) {
-      const result = configureCliMcpClient(client);
-      if (result === "failed") {
-        console.log(yellow(`  Could not configure ${client.displayName}. See README.md for the manual command.`));
-      } else {
-        configuredClients.push(client.displayName);
-        const message = result === "already-configured"
-          ? `  ${client.displayName} already has Brightspace configured.`
-          : `  ${client.displayName} configured!`;
-        console.log(green(message));
-      }
-    }
-    console.log("");
-  }
-
-  // ── Step 10: ChatGPT Desktop instructions ────────────────────────
-  if (isChatGPTInstalled()) {
-    const isWindows = process.platform === "win32";
-    const mcpJson = isWindows
-      ? `{\n  "command": "cmd",\n  "args": ["/c", "npx", "-y", "brightspace-mcp-server@latest"]\n}`
-      : `{\n  "command": "npx",\n  "args": ["-y", "brightspace-mcp-server@latest"]\n}`;
-    console.log(yellow("  ChatGPT Desktop detected."));
-    console.log(dim("  ChatGPT doesn't support automatic MCP config — add it manually:"));
-    console.log(dim("  1. Open ChatGPT Desktop → Settings → Tools → Add MCP tool → Add manually"));
-    console.log(dim("  2. Paste this config:"));
-    console.log("");
-    console.log(mcpJson);
-    console.log("");
-  }
-
-  rl2.close();
-
   // ── Final summary ────────────────────────────────────────────────
   console.log(bold("Setup complete!"));
   console.log("");
   console.log(`  Config saved to: ${dim(getConfigStorePath())}`);
   console.log("");
   console.log("  Next steps:");
-  if (configuredClients.length > 0) {
-    console.log(`  1. Restart ${configuredClients.join(", ")}`);
-    console.log("  2. Ask your AI client about your Brightspace courses");
-    console.log("     Sign-in runs automatically if your saved session has expired.");
-  } else {
-    console.log("  1. Register the MCP server in your AI client using the command in README.md");
-    console.log("  2. Restart your AI client and ask about your Brightspace courses");
-  }
+  console.log("  1. Script against brightspace-api, or run the `brightspace` CLI");
+  console.log("     Sign-in runs automatically if your saved session has expired.");
   console.log("");
 }
 
