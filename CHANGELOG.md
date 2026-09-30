@@ -3,6 +3,18 @@
 All notable changes to `brightspace-api` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Fixed
+
+- A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look
+  expired and re-mint on each call. Only a positive whole number of seconds is honoured; anything
+  else is ignored with a warning on stderr and falls back to `tokenTtl` in `config.json`, then
+  `3600`. A hand-edited `tokenTtl` in `config.json` gets the same check, and a `TokenManager`
+  constructed with an invalid `tokenTtl` (directly or through `createBrightspaceClient({ config })`)
+  warns and uses `3600`. Ported from
+  [RohanMuppa/brightspace-mcp-server#55](https://github.com/RohanMuppa/brightspace-mcp-server/issues/55).
+
 ## 0.1.0 — first release
 
 Extracted from [`brightspace-mcp-server`](https://github.com/RohanMuppa/brightspace-mcp-server)
