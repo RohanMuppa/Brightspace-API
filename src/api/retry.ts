@@ -89,3 +89,40 @@ export function retryAfterMsFrom(error: unknown): number | undefined {
   }
   return undefined;
 }
+
+const DELTA_SECONDS = /^\d+$/;
+const DAY = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)";
+const LONG_DAY = "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)";
+const MONTH = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+const TIME = "\\d{2}:\\d{2}:\\d{2}";
+// The three HTTP-date forms of RFC 9110 §5.6.7: IMF-fixdate, then the
+// obsolete RFC 850 and asctime forms that recipients must still accept.
+const IMF_FIXDATE = new RegExp(`^${DAY}, \\d{2} ${MONTH} \\d{4} ${TIME} GMT$`);
+const RFC850_DATE = new RegExp(`^${LONG_DAY}, \\d{2}-${MONTH}-\\d{2} ${TIME} GMT$`);
+const ASCTIME_DATE = new RegExp(`^${DAY} ${MONTH} (?:\\d{2}| \\d) ${TIME} \\d{4}$`);
+
+/**
+ * Parse a Retry-After header into whole seconds to wait, or undefined.
+ *
+ * RFC 9110 §10.2.3 allows either delta-seconds or an HTTP-date. A date is
+ * converted to the seconds remaining from `now`, rounded up; one that is not
+ * in the future asks for no wait at all. Anything else, `10abc` included, is
+ * ignored so the caller falls back to its normal backoff.
+ */
+export function parseRetryAfter(value: string | null | undefined, now: number = Date.now()): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (DELTA_SECONDS.test(trimmed)) return parseInt(trimmed, 10);
+
+  let date: number;
+  if (IMF_FIXDATE.test(trimmed) || RFC850_DATE.test(trimmed)) {
+    date = Date.parse(trimmed);
+  } else if (ASCTIME_DATE.test(trimmed)) {
+    // asctime carries no zone, but HTTP dates are always GMT.
+    date = Date.parse(`${trimmed} GMT`);
+  } else {
+    return undefined;
+  }
+  if (Number.isNaN(date) || date <= now) return undefined;
+  return Math.ceil((date - now) / 1000);
+}
