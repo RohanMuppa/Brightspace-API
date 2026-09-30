@@ -14,6 +14,13 @@ All notable changes to `brightspace-api` are documented here. Format follows
   constructed with an invalid `tokenTtl` (directly or through `createBrightspaceClient({ config })`)
   warns and uses `3600`. Ported from
   [RohanMuppa/brightspace-mcp-server#55](https://github.com/RohanMuppa/brightspace-mcp-server/issues/55).
+- A 429 whose `Retry-After` is an HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`) is no longer
+  retried almost immediately. The header is now read as RFC 9110 allows: delta-seconds, or an
+  HTTP-date converted to the seconds remaining, rounded up. A date that has already passed, or a
+  value that is neither form (`10abc`), is ignored and the normal backoff applies instead of a
+  misread wait. JSON requests and file downloads share the same parser, and the `RateLimitError`
+  message states the wait for the date form too. Ported from
+  [RohanMuppa/brightspace-mcp-server#57](https://github.com/RohanMuppa/brightspace-mcp-server/issues/57).
 
 ## 0.1.0 — first release
 
