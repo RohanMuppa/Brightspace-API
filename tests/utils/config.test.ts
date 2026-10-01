@@ -62,4 +62,50 @@ describe("resolved authentication configuration", () => {
     await expect(loadConfig()).rejects.toThrow("without embedded credentials");
     expect(fake.password).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["false", false], ["False", false], [" FALSE ", false], ["0", false], ["no", false], ["off", false],
+    ["true", true], ["TRUE", true], ["1", true], ["yes", true], ["on", true],
+  ])("reads D2L_HEADLESS=%j as %s", async (value, expected) => {
+    vi.stubEnv("D2L_HEADLESS", value);
+    fake.store = { headless: !expected };
+    expect(await loadConfig()).toMatchObject({ headless: expected });
+  });
+
+  it.each([
+    ["0", false], ["No", false], ["OFF", false], ["1", true], ["Yes", true], ["on", true],
+  ])("reads D2L_ACTIVE_ONLY=%j as %s", async (value, expected) => {
+    vi.stubEnv("D2L_ACTIVE_ONLY", value);
+    fake.store = { activeOnly: !expected };
+    expect((await loadConfig()).courseFilter.activeOnly).toBe(expected);
+  });
+
+  it("treats an empty D2L_HEADLESS as unset so the setup preference applies", async () => {
+    vi.stubEnv("D2L_HEADLESS", "");
+    fake.store = { headless: false };
+    expect(await loadConfig()).toMatchObject({ headless: false });
+  });
+
+  it("treats a blank D2L_ACTIVE_ONLY as unset so config.json applies", async () => {
+    vi.stubEnv("D2L_ACTIVE_ONLY", "  ");
+    fake.store = { activeOnly: false };
+    expect((await loadConfig()).courseFilter.activeOnly).toBe(false);
+  });
+
+  it("ignores an unrecognized D2L_HEADLESS with a warning and falls back to config.json", async () => {
+    vi.stubEnv("D2L_HEADLESS", "flase");
+    fake.store = { headless: false };
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await loadConfig()).toMatchObject({ headless: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ignoring D2L_HEADLESS="flase"'));
+    warn.mockRestore();
+  });
+
+  it("ignores an unrecognized D2L_ACTIVE_ONLY with a warning and keeps the default", async () => {
+    vi.stubEnv("D2L_ACTIVE_ONLY", "maybe");
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await loadConfig()).courseFilter.activeOnly).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ignoring D2L_ACTIVE_ONLY="maybe"'));
+    warn.mockRestore();
+  });
 });
