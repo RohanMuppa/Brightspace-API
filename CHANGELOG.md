@@ -3,6 +3,17 @@
 All notable changes to `brightspace-api` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Fixed
+
+- `D2L_HEADLESS` and `D2L_ACTIVE_ONLY` are now read as real booleans: `true`/`1`/`yes`/`on` and
+  `false`/`0`/`no`/`off`, case-insensitive with surrounding whitespace ignored. Previously
+  anything other than the exact string `false` (including `0`, `no`, `False`, and typos) was read
+  as true. An empty value counts as unset, and an unrecognized value is ignored with a
+  `[config] Ignoring …` warning on stderr so `config.json` or the default applies
+  ([RohanMuppa/brightspace-mcp-server#67](https://github.com/RohanMuppa/brightspace-mcp-server/issues/67)).
+
 ## 0.1.0 — first release
 
 Extracted from [`brightspace-mcp-server`](https://github.com/RohanMuppa/brightspace-mcp-server)

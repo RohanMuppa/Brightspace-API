@@ -41,9 +41,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
       : path.join(os.homedir(), ".d2l-session");
 
   // Code-entry and other interactive MFA methods need a visible browser.
-  const headless = process.env.D2L_HEADLESS !== undefined
-    ? process.env.D2L_HEADLESS !== "false"
-    : store?.headless ?? true;
+  const headless = envBoolean(process.env.D2L_HEADLESS, "D2L_HEADLESS")
+    ?? store?.headless
+    ?? true;
 
   // Resolve tokenTtl: env > store > default (3600)
   const tokenTtl = process.env.D2L_TOKEN_TTL
@@ -61,10 +61,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     : store?.excludeCourses;
 
   // Resolve activeOnly: env > store > default (true)
-  let activeOnly = store?.activeOnly ?? true;
-  if (process.env.D2L_ACTIVE_ONLY !== undefined) {
-    activeOnly = process.env.D2L_ACTIVE_ONLY !== 'false';
-  }
+  const activeOnly = envBoolean(process.env.D2L_ACTIVE_ONLY, "D2L_ACTIVE_ONLY")
+    ?? store?.activeOnly
+    ?? true;
 
   const configuredUrl = new URL(process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com");
   if (configuredUrl.protocol !== "https:" || configuredUrl.username || configuredUrl.password) {
@@ -99,6 +98,22 @@ export function accountSessionDirectory(root: string, baseUrl: string, username?
   if (!username) return root;
   const account = createHash("sha256").update(JSON.stringify([new URL(baseUrl).origin, username])).digest("hex");
   return path.join(root, "accounts", account);
+}
+
+/**
+ * An on/off environment variable. Comparing against the exact string "false"
+ * read "0", "no", "False" and a typo as true, so D2L_HEADLESS=0 kept the
+ * browser hidden from a user who needed it to enter an MFA code. An empty
+ * value counts as unset, and anything unrecognized is ignored with a warning
+ * so config.json or the default applies.
+ */
+function envBoolean(value: string | undefined, source: string): boolean | undefined {
+  const text = value?.trim().toLowerCase();
+  if (!text) return undefined;
+  if (["true", "1", "yes", "on"].includes(text)) return true;
+  if (["false", "0", "no", "off"].includes(text)) return false;
+  console.error(`[config] Ignoring ${source}=${JSON.stringify(value)}: expected true or false`);
+  return undefined;
 }
 
 function expandTilde(filePath: string): string {
