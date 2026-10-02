@@ -166,6 +166,43 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
     expect(fill).toHaveBeenCalledOnce();
   });
 
+  it("completes a verified Brightspace home without announcing stale challenge controls", async () => {
+    const lines = captureWarnings();
+    const onMfaChallenge = vi.fn();
+    const { page } = makeMfaPage([
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true, number: "42", challenge: true },
+    ]);
+    await handleMFA(page, undefined, onMfaChallenge);
+    expect({ warnings: lines, onMfaChallenge: onMfaChallenge.mock.calls }).toEqual({ warnings: [], onMfaChallenge: [] });
+  });
+
+  it("does not ask for a code when a verified Brightspace home still shows a stale code field", async () => {
+    const requestMfaCode = vi.fn(async () => "123456");
+    const { page, fill } = makeMfaPage([
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true, code: true },
+    ]);
+    await handleMFA(page, requestMfaCode);
+    expect(requestMfaCode).not.toHaveBeenCalled();
+    expect(fill).not.toHaveBeenCalled();
+  });
+
+  it("does not click stay-signed-in controls once Brightspace home is verified", async () => {
+    const { page, yes } = makeMfaPage([
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true, kmsi: true },
+    ]);
+    await handleMFA(page);
+    expect(yes).not.toHaveBeenCalled();
+  });
+
+  it("marks the code submitted only after it was filled and submitted", async () => {
+    const requestMfaCode = vi.fn(async () => "123456");
+    const flow = new PurdueSSOFlow({ baseUrl: BASE_URL, requestMfaCode }) as any;
+    const { page, fill } = makeMfaPage([{ code: true }]);
+    fill.mockRejectedValueOnce(new Error("detached"));
+    await expect(flow.handleMFA(page)).rejects.toThrow();
+    expect(flow.mfaCodeSubmitted).toBe(false);
+  });
+
   it("leaves code entry to the user when the browser is visible", async () => {
     const { page, fill } = makeMfaPage([
       { code: true },

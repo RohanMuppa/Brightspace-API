@@ -227,6 +227,12 @@ export class PurdueSSOFlow {
     let announcedToCaller = false;
     try {
       while (Date.now() < deadline) {
+        // A verified session outranks whatever challenge controls linger on
+        // screen: answering them would prompt or announce for nothing.
+        if (await this.isAuthenticated(page)) {
+          log("INFO", "Login successful - verified Brightspace home");
+          return;
+        }
         if (await this.duoMfa.handle(page)) challenged = true;
         if (await this.submitMfaCode(page)) challenged = true;
         const number = await this.readNumberMatch(page);
@@ -246,10 +252,6 @@ export class PurdueSSOFlow {
             announcedToCaller = true;
             this.config.onMfaChallenge?.(number);
           }
-        }
-        if (await this.isAuthenticated(page)) {
-          log("INFO", "Login successful - verified Brightspace home");
-          return;
         }
         await this.clickProvenKmsi(page);
         await page.waitForTimeout(NUMBER_MATCH_POLL_MS);
@@ -278,13 +280,14 @@ export class PurdueSSOFlow {
         `This MFA method requires a code. Run \`${AUTH_COMMAND}\` in a terminal to enter it.`,
       );
     }
-    this.mfaCodeSubmitted = true;
     const code = await this.config.requestMfaCode();
     if (!/^\d{6,8}$/.test(code)) throw new UnsupportedAuthenticationError("The MFA code must contain 6-8 digits.");
     await input.fill(code);
     const submit = await this.firstVisible(page, MFA_CODE_SUBMIT_SELECTORS);
     if (submit) await submit.click();
     else await input.press("Enter");
+    // Only a code that actually reached Microsoft counts as submitted.
+    this.mfaCodeSubmitted = true;
     log("INFO", "Authenticator code submitted");
     return true;
   }
