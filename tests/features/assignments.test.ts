@@ -588,3 +588,125 @@ describe("gradebook heads-up rows", () => {
     expect(items).toHaveLength(2);
   });
 });
+
+/**
+ * A sign-in that has not finished is not an empty course. Every route below
+ * getAssignments swallows its own failures so one forbidden endpoint cannot
+ * hide the rest, but an authentication failure means none of them answered:
+ * the caller has to get an auth error rather than zero assignments.
+ * Ported from brightspace-mcp-server#74.
+ */
+
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
+import { ApiError, TokenRefreshError, isAuthUnavailable } from "../../src/api/errors.js";
+import { toPublicError, BrightspaceMfaPendingError, BrightspaceAuthExpiredError } from "../../src/errors.js";
+
+const mfaPending = () => new AuthProcessError("mfaPending", "MFA approval pending");
+
+describe("isAuthUnavailable", () => {
+  it("recognises a failed or pending sign-in, an unrecovered 401, and a failed token refresh", () => {
+    expect(isAuthUnavailable(mfaPending())).toBe(true);
+    expect(isAuthUnavailable(new AuthProcessError("timeout", "timed out"))).toBe(true);
+    expect(isAuthUnavailable(new ApiError(401, "/x", "expired"))).toBe(true);
+    expect(isAuthUnavailable(new TokenRefreshError("down"))).toBe(true);
+  });
+
+  it("does not treat a per-resource refusal or a plain failure as an auth failure", () => {
+    expect(isAuthUnavailable(new ApiError(403, "/x", "forbidden"))).toBe(false);
+    expect(isAuthUnavailable(new ApiError(404, "/x", "missing"))).toBe(false);
+    expect(isAuthUnavailable(new ApiError(500, "/x", "boom"))).toBe(false);
+    expect(isAuthUnavailable(forbidden())).toBe(false);
+    expect(isAuthUnavailable(new Error("nope"))).toBe(false);
+    expect(isAuthUnavailable(undefined)).toBe(false);
+  });
+});
+
+describe("getAssignments while sign-in is pending", () => {
+  it("throws an MFA-pending error for a single course instead of an empty list", async () => {
+    const { ctx } = setupContext(() => {
+      throw mfaPending();
+    }, allCoursesConfig(true));
+
+    const error = await getAssignments(ctx, { courseId: COURSE_A.Id }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(AuthProcessError);
+    expect(toPublicError(error)).toBeInstanceOf(BrightspaceMfaPendingError);
+  });
+
+  it("throws across all courses when the course routes cannot sign in", async () => {
+    // Enrollments answer from cache, the course routes need a live session.
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A)] };
+      throw mfaPending();
+    }, allCoursesConfig(true));
+
+    const error = await getAssignments(ctx).catch((e) => e);
+
+    expect(toPublicError(error)).toBeInstanceOf(BrightspaceMfaPendingError);
+  });
+
+  it("throws when only the dropbox route is rejected with 401", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/dropbox/folders/")) throw new ApiError(401, path, "expired");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const error = await getAssignments(ctx, { courseId: COURSE_A.Id }).catch((e) => e);
+
+    expect(toPublicError(error)).toBeInstanceOf(BrightspaceAuthExpiredError);
+  });
+
+  it("throws rather than reporting an assignment as unsubmitted", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/mysubmissions/")) throw mfaPending();
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    await expect(getAssignments(ctx, { courseId: COURSE_A.Id })).rejects.toBeInstanceOf(AuthProcessError);
+  });
+
+  it("throws rather than reporting feedback as absent", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/myFeedback/")) throw new TokenRefreshError("token service down");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    await expect(getAssignments(ctx, { courseId: COURSE_A.Id })).rejects.toBeInstanceOf(TokenRefreshError);
+  });
+
+  it("throws rather than reporting a quiz's attempts as unmeasured", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/quizzes/")) return [{ QuizId: 66, Name: "Quiz 1", IsActive: true }];
+      if (path.endsWith("/quizzes/66/attempts/")) throw new ApiError(401, path, "expired");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    await expect(getAssignments(ctx, { courseId: COURSE_A.Id })).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("throws rather than falling back to content metadata for a content-linked quiz", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/content/toc")) {
+        return { Modules: [{ Topics: [{ TopicId: 7, Title: "VNOS #1", ActivityType: 4, ToolItemId: 1408513 }] }] };
+      }
+      if (path.endsWith("/quizzes/1408513")) throw mfaPending();
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    await expect(getAssignments(ctx, { courseId: COURSE_A.Id })).rejects.toBeInstanceOf(AuthProcessError);
+  });
+
+  it("still tolerates non-auth route failures and skips a forbidden course", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      if (path.endsWith(`/${COURSE_B.Id}/dropbox/folders/`)) throw new ApiError(500, path, "boom");
+      if (path.endsWith(`/${COURSE_B.Id}/quizzes/`)) throw new ApiError(403, path, "forbidden");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(result.courses[1].assignments).toEqual([]);
+  });
+});

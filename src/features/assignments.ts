@@ -7,6 +7,7 @@
 import type { z } from "zod";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { fetchAllItems } from "../api/paginate.js";
+import { isAuthUnavailable } from "../api/errors.js";
 import { GetAssignmentsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
@@ -304,6 +305,7 @@ async function recoverContentQuizzes(
         ttl: DEFAULT_CACHE_TTLS.assignments,
       });
     } catch (error) {
+      if (isAuthUnavailable(error)) throw error;
       log("DEBUG", `Failed to fetch content-linked quiz ${quizId}: using content metadata`, error);
     }
 
@@ -314,6 +316,7 @@ async function recoverContentQuizzes(
         { ttl: DEFAULT_CACHE_TTLS.courseContent }
       );
     } catch (error) {
+      if (isAuthUnavailable(error)) throw error;
       log("DEBUG", `Failed to fetch content topic ${topic.TopicId}: using table-of-contents metadata`, error);
     }
 
@@ -364,6 +367,12 @@ export async function fetchCourseAssignments(
     }),
   ]);
 
+  // Each route may fail on its own without costing the others, but a failed
+  // sign-in means none of them answered: report that, not an empty course.
+  for (const result of [dropboxResult, quizResult, gradebookResult, contentResult]) {
+    if (result.status === "rejected" && isAuthUnavailable(result.reason)) throw result.reason;
+  }
+
   // Process Dropbox folders
   if (dropboxResult.status === "fulfilled") {
     // D2L dropbox endpoint may return paged { Objects: [...] } or flat array
@@ -383,6 +392,7 @@ export async function fetchCourseAssignments(
         );
         submissions = Array.isArray(submissionsRaw) ? submissionsRaw : (submissionsRaw as any).Objects ?? [];
       } catch (error: any) {
+        if (isAuthUnavailable(error)) throw error;
         // 404 means no submissions yet - that's fine
         if (error?.status !== 404) {
           log("DEBUG", `Failed to fetch submissions for folder ${folder.Id}`, error);
@@ -397,6 +407,7 @@ export async function fetchCourseAssignments(
           { ttl: DEFAULT_CACHE_TTLS.assignments }
         );
       } catch (error: any) {
+        if (isAuthUnavailable(error)) throw error;
         // 404/403 means no feedback available (or no access) - that's fine
         if (error?.status !== 404 && error?.status !== 403) {
           log("DEBUG", `Failed to fetch feedback for folder ${folder.Id}`, error);
@@ -500,6 +511,7 @@ export async function fetchCourseAssignments(
           // D2L attempts endpoint may return paged { Objects: [...] } or flat array
           attempts = Array.isArray(attemptsRaw) ? attemptsRaw : (attemptsRaw as any).Objects ?? [];
         } catch (error: any) {
+          if (isAuthUnavailable(error)) throw error;
           if (error?.status === 404) {
             // 404 means no attempts yet, which is a measurement of zero
             attempts = [];
@@ -681,6 +693,11 @@ export async function getAssignments(
   });
 
   const results = await Promise.allSettled(assignmentPromises);
+  // A course that could not sign in is not a course with no work in it.
+  const authFailure = results.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected" && isAuthUnavailable(r.reason)
+  );
+  if (authFailure) throw authFailure.reason;
   const courses = results
     .filter((r): r is PromiseFulfilledResult<CourseAssignments | null> => r.status === "fulfilled" && r.value !== null)
     .map((r) => r.value as CourseAssignments);

@@ -5,6 +5,7 @@
  */
 
 import { AuthError } from "../utils/errors.js";
+import { AuthProcessError } from "../auth/auth-runner.js";
 
 // Base class for all HTTP API errors
 export class ApiError extends AuthError {
@@ -63,4 +64,18 @@ export class TokenRefreshError extends NetworkError {
     super(`Token refresh is temporarily unavailable: ${detail}. Your saved session was retained. Try again later.`, cause);
     this.name = "TokenRefreshError";
   }
+}
+
+/**
+ * True when an error means the session itself is unusable, not that one
+ * resource refused: a sign-in that failed or is still waiting on MFA, a 401
+ * left over after re-authentication, or a token that could not be renewed.
+ * Features that tolerate per-route failures must not tolerate these, or a
+ * pending sign-in reads as a successful empty result. A 403 is deliberately
+ * not included: it is one resource refusing, and the session still works.
+ */
+export function isAuthUnavailable(error: unknown): boolean {
+  return error instanceof AuthProcessError ||
+    error instanceof TokenRefreshError ||
+    (error instanceof ApiError && error.status === 401);
 }
