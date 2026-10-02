@@ -27,6 +27,19 @@ const FIELD_POLL_MS = 250;
 const NUMBER_MATCH_SELECTOR = "#idRichContext_DisplaySign";
 const MFA_CODE_SELECTORS = ["#idTxtBx_SAOTCC_OTC", 'input[name="otc"]'];
 const MFA_CODE_SUBMIT_SELECTORS = ["#idSubmit_SAOTCC_Continue", "#idSIButton9"];
+/**
+ * Entra's "You didn't enter the expected verification code" message. A wrong
+ * code does not navigate anywhere: the field stays put and this appears.
+ */
+const MFA_CODE_ERROR_SELECTOR = "#idSpan_SAOTCC_Error_OTC";
+/** Rejected codes allowed per login before giving up instead of re-asking. */
+const MAX_MFA_CODE_REJECTIONS = 3;
+/**
+ * Polls after a submission before an error message that was already on
+ * screen at submit time (left over from the previous wrong code, and never
+ * hidden in between) is believed to be the verdict on the new code.
+ */
+const MFA_CODE_VERDICT_SETTLE_POLLS = 3;
 
 /** How often to look for the number while waiting on MFA. */
 const NUMBER_MATCH_POLL_MS = 2000;
@@ -60,8 +73,20 @@ function signInName(username: string, baseUrl?: string): string {
 export class PurdueSSOFlow {
   private config: PurdueSSOConfig;
   private accountHintSubmitted = false;
-  /** One authenticator code per login. See submitMfaCode. */
+  /** One authenticator code at a time. See submitMfaCode. */
   private mfaCodeSubmitted = false;
+  /**
+   * The last submitted code still awaits Microsoft's verdict. Cleared the
+   * first time a rejection is read, so one error message is counted once.
+   */
+  private mfaCodePending = false;
+  /** The error message was already visible right after the last submission. */
+  private mfaCodeErrorAtSubmit = false;
+  /** The error message has been seen hidden since the last submission. */
+  private mfaCodeErrorClearedSinceSubmit = false;
+  /** Polls spent waiting on the last submission's verdict. */
+  private mfaCodePollsSinceSubmit = 0;
+  private mfaCodeRejections = 0;
   private readonly duoMfa: DuoMfaHandler;
 
   constructor(config: PurdueSSOConfig) {
@@ -269,7 +294,23 @@ export class PurdueSSOFlow {
     const input = await this.firstVisible(page, MFA_CODE_SELECTORS);
     if (!input) return false;
     if (this.config.headless === false) return false;
-    // Ask once per login. This runs on every two-second poll, and Microsoft
+    if (await this.mfaCodeRejected(page)) {
+      this.mfaCodeRejections += 1;
+      if (this.mfaCodeRejections >= MAX_MFA_CODE_REJECTIONS) {
+        throw new MfaApprovalError(
+          undefined,
+          undefined,
+          `Microsoft rejected ${this.mfaCodeRejections} authenticator codes in a row. Run ${AUTH_COMMAND} to try again.`,
+        );
+      }
+      log(
+        "WARN",
+        `Microsoft rejected the authenticator code. Enter a new code (attempt ${this.mfaCodeRejections + 1} of ${MAX_MFA_CODE_REJECTIONS}).`,
+      );
+      this.mfaCodeSubmitted = false;
+      await input.fill("");
+    }
+    // Ask once per code. This runs on every two-second poll, and Microsoft
     // commonly leaves the field on screen while it validates, so without this
     // a correct code gets a second prompt on the next tick. That prompt blocks
     // on stdin, and the deadline is only checked between iterations, so the
@@ -288,7 +329,33 @@ export class PurdueSSOFlow {
     else await input.press("Enter");
     // Only a code that actually reached Microsoft counts as submitted.
     this.mfaCodeSubmitted = true;
+    this.mfaCodePending = true;
+    this.mfaCodeErrorAtSubmit = await this.anyVisible(page, [MFA_CODE_ERROR_SELECTOR]);
+    this.mfaCodeErrorClearedSinceSubmit = false;
+    this.mfaCodePollsSinceSubmit = 0;
     log("INFO", "Authenticator code submitted");
+    return true;
+  }
+
+  /**
+   * True exactly once per submission that Entra rejected. A field that merely
+   * lingers while a correct code is verified shows no error, so it never
+   * counts. An error already on screen when the code went in is the previous
+   * code's verdict until it has been hidden at least once, or has stayed up
+   * for a few polls with the field still waiting.
+   */
+  private async mfaCodeRejected(page: Page): Promise<boolean> {
+    if (!this.mfaCodePending) return false;
+    this.mfaCodePollsSinceSubmit += 1;
+    if (!await this.anyVisible(page, [MFA_CODE_ERROR_SELECTOR])) {
+      this.mfaCodeErrorClearedSinceSubmit = true;
+      return false;
+    }
+    const fresh = !this.mfaCodeErrorAtSubmit ||
+      this.mfaCodeErrorClearedSinceSubmit ||
+      this.mfaCodePollsSinceSubmit >= MFA_CODE_VERDICT_SETTLE_POLLS;
+    if (!fresh) return false;
+    this.mfaCodePending = false;
     return true;
   }
 

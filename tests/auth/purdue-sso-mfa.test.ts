@@ -14,6 +14,8 @@ interface PollState {
   url?: string;
   cookie?: boolean;
   d2l?: boolean;
+  /** Entra's "You didn't enter the expected verification code" message. */
+  codeError?: boolean;
 }
 
 function captureWarnings() {
@@ -37,6 +39,7 @@ function makeMfaPage(states: PollState[]) {
       if (selector === SIGN_SELECTOR) return current().number !== undefined;
       if (selector === "#idTxtBx_SAOTCC_OTC" || selector === 'input[name="otc"]') return Boolean(current().code);
       if (selector === "#idSubmit_SAOTCC_Continue") return Boolean(current().code);
+      if (selector === "#idSpan_SAOTCC_Error_OTC") return Boolean(current().codeError);
       if (selector === "#idDiv_SAOTCAS_Title" || selector === "#idDiv_SAOTCC_Title") return Boolean(current().challenge || current().code);
       if (selector === "#KmsiCheckboxField" || selector === "#idSIButton9") return Boolean(current().kmsi);
       return false;
@@ -201,6 +204,78 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
     fill.mockRejectedValueOnce(new Error("detached"));
     await expect(flow.handleMFA(page)).rejects.toThrow();
     expect(flow.mfaCodeSubmitted).toBe(false);
+  });
+
+  describe("rejected authenticator codes", () => {
+    const codes = (...values: string[]) => {
+      let index = 0;
+      return vi.fn(async () => values[Math.min(index++, values.length - 1)]);
+    };
+
+    it("clears the field and asks again when Entra rejects a code", async () => {
+      const lines = captureWarnings();
+      const requestMfaCode = codes("111111", "222222");
+      const { page, fill } = makeMfaPage([
+        { code: true },
+        { code: true, codeError: true },
+        { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+      ]);
+      await handleMFA(page, requestMfaCode);
+      expect(requestMfaCode).toHaveBeenCalledTimes(2);
+      expect(fill.mock.calls).toEqual([["111111"], [""], ["222222"]]);
+      expect(lines.filter(line => line.includes("rejected the authenticator code"))).toHaveLength(1);
+    });
+
+    it("does not count the previous code's error again while the new code is verified", async () => {
+      // Entra may leave the old message up for a moment after the new submit.
+      const requestMfaCode = codes("111111", "222222");
+      const { page } = makeMfaPage([
+        { code: true },
+        { code: true, codeError: true },
+        { code: true, codeError: true },
+        { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+      ]);
+      await handleMFA(page, requestMfaCode);
+      expect(requestMfaCode).toHaveBeenCalledTimes(2);
+    });
+
+    it("counts a fresh rejection as soon as the old message was hidden in between", async () => {
+      const requestMfaCode = codes("111111", "222222", "333333");
+      const { page } = makeMfaPage([
+        { code: true },
+        { code: true, codeError: true },
+        { code: true },
+        { code: true, codeError: true },
+        { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+      ]);
+      await handleMFA(page, requestMfaCode);
+      expect(requestMfaCode).toHaveBeenCalledTimes(3);
+    });
+
+    it("ignores an error message that was on screen before any code was submitted", async () => {
+      const requestMfaCode = codes("111111");
+      const { page } = makeMfaPage([
+        { code: true, codeError: true },
+        { code: true, codeError: true },
+        { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+      ]);
+      await handleMFA(page, requestMfaCode);
+      expect(requestMfaCode).toHaveBeenCalledOnce();
+    });
+
+    it("gives up after three rejected codes instead of waiting out the five minutes", async () => {
+      captureWarnings();
+      const requestMfaCode = codes("111111", "222222", "333333", "444444");
+      const { page, poll } = makeMfaPage([
+        { code: true },
+        { code: true, codeError: true },
+      ]);
+      const failure = handleMFA(page, requestMfaCode);
+      await expect(failure).rejects.toBeInstanceOf(MfaApprovalError);
+      await expect(failure).rejects.toThrow("rejected 3 authenticator codes");
+      expect(requestMfaCode).toHaveBeenCalledTimes(3);
+      expect(poll()).toBeLessThan(10);
+    });
   });
 
   it("leaves code entry to the user when the browser is visible", async () => {
