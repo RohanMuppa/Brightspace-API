@@ -32,8 +32,9 @@ export class MfaApprovalError extends BrowserAuthError {
    * (see purdue-sso.ts readNumberMatch) — safe to surface verbatim.
    */
   readonly numberMatch?: string;
-  constructor(cause?: Error, numberMatch?: string) {
-    super(`MFA approval failed or timed out after 5 minutes. Run ${AUTH_COMMAND} to retry.`, "mfa_approval", cause);
+  /** `message` replaces the default timeout wording when the failure was something else. */
+  constructor(cause?: Error, numberMatch?: string, message?: string) {
+    super(message ?? `MFA approval failed or timed out after 5 minutes. Run ${AUTH_COMMAND} to retry.`, "mfa_approval", cause);
     this.name = "MfaApprovalError";
     this.numberMatch = numberMatch;
   }

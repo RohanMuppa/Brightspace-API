@@ -19,6 +19,7 @@ import {
 import { saveSecureConfig } from "./utils/secure-config.js";
 import type { ConfigStoreData } from "./utils/config-store.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
+import { applyPasswordInput, INITIAL_PASSWORD_INPUT } from "./utils/password-input.js";
 
 // ANSI helpers
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -34,6 +35,8 @@ interface SchoolPreset {
   name: string;
   baseUrl: string;
   usernameLabel: string;
+  /** Named on its own: deriving it from `usernameLabel` reads wrongly for "username or full email". */
+  passwordLabel: string;
   mfaNote: string;
   /** Asked only by shared instances that host several campuses. */
   campusPrompt?: string;
@@ -46,12 +49,14 @@ export const SCHOOL_PRESETS: Record<string, SchoolPreset> = {
     name: "Purdue University",
     baseUrl: "https://purdue.brightspace.com",
     usernameLabel: "Purdue career account username or full email",
+    passwordLabel: "Purdue career account password",
     mfaNote: "Microsoft Authenticator number matching can run without a browser window.",
   },
   suny: {
     name: "SUNY",
     baseUrl: "https://mylearning.suny.edu",
     usernameLabel: "SUNY campus username",
+    passwordLabel: "SUNY campus password",
     mfaNote: "Approve the sign-in request from your campus MFA app.",
     campusPrompt: "Which SUNY campus are you at? (e.g. SUNY Poly)",
     usernameHint: "Most campuses want the full sign-in address, e.g. abc123@sunypoly.edu",
@@ -60,6 +65,7 @@ export const SCHOOL_PRESETS: Record<string, SchoolPreset> = {
     name: "Western University",
     baseUrl: "https://westernu.brightspace.com",
     usernameLabel: "Western account username or full email",
+    passwordLabel: "Western account password",
     mfaNote: "Approve the sign-in request from your MFA app.",
     usernameHint: "Use your full sign-in address if your Western account requires it.",
   },
@@ -91,7 +97,9 @@ function ask(rl: readline.Interface, question: string): Promise<string> {
 /**
  * Prompt for a password without echoing characters to the terminal.
  * We swap stdout.write to suppress the default echo, then print
- * asterisks ourselves for each typed character.
+ * asterisks ourselves for each accepted character. Key handling lives in
+ * `applyPasswordInput`, which reads each chunk character by character so a
+ * pasted password (one chunk, often ending in Enter) is taken correctly.
  */
 function askPassword(prompt: string): Promise<string> {
   return new Promise((resolve) => {
@@ -102,7 +110,6 @@ function askPassword(prompt: string): Promise<string> {
 
     // Mute the built-in echo
     const origWrite = process.stdout.write.bind(process.stdout);
-    let password = "";
     let muted = false;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,38 +136,27 @@ function askPassword(prompt: string): Promise<string> {
     process.stdin.setRawMode?.(true);
     process.stdin.resume();
 
+    let input = INITIAL_PASSWORD_INPUT;
+    const finish = () => {
+      process.stdout.write = origWrite;
+      process.stdin.setRawMode?.(false);
+      process.stdin.removeListener("data", onData);
+      rl.close();
+    };
     const onData = (key: Buffer) => {
-      const ch = key.toString("utf-8");
-      // Ctrl+C
-      if (ch === "\x03") {
-        process.stdout.write = origWrite;
-        process.stdin.setRawMode?.(false);
-        process.stdin.removeListener("data", onData);
-        rl.close();
+      const step = applyPasswordInput(input, key.toString("utf-8"));
+      input = step.state;
+      if (step.echo) origWrite(step.echo);
+      if (step.cancelled) {
+        finish();
         console.log("");
         process.exit(0);
       }
-      // Enter
-      if (ch === "\r" || ch === "\n") {
-        process.stdout.write = origWrite;
-        process.stdin.setRawMode?.(false);
-        process.stdin.removeListener("data", onData);
-        rl.close();
+      if (step.done) {
+        finish();
         origWrite("\n");
-        resolve(password);
-        return;
+        resolve(input.password);
       }
-      // Backspace
-      if (ch === "\x7f" || ch === "\b") {
-        if (password.length > 0) {
-          password = password.slice(0, -1);
-          origWrite("\b \b");
-        }
-        return;
-      }
-      // Normal character
-      password += ch;
-      origWrite("*");
     };
 
     process.stdin.on("data", onData);
@@ -357,7 +353,7 @@ async function main(): Promise<void> {
   rl.close();
 
   const passwordPrompt = preset
-    ? `What is your ${preset.usernameLabel.replace("username", "password")}? `
+    ? `What is your ${preset.passwordLabel}? `
     : "What is your Brightspace password? ";
   let password = "";
   while (!password) {

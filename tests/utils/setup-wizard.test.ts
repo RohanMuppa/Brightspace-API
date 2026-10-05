@@ -55,6 +55,15 @@ describe("school presets", () => {
   });
 });
 
+describe("password prompt labels", () => {
+  it("names the password on its own rather than rewriting the username label", () => {
+    for (const preset of Object.values(SCHOOL_PRESETS)) {
+      expect(preset.passwordLabel).toMatch(/password$/);
+      expect(preset.passwordLabel).not.toMatch(/username|email/i);
+    }
+  });
+});
+
 describe("saved settings on a repeat run", () => {
   const answers = {
     baseUrl: "https://mylearning.suny.edu",
