@@ -29,6 +29,16 @@ describe("toPublicError", () => {
     expect(error.message).not.toContain(SECRET);
   });
 
+  // A retry joins the background sign-in and waits for the approval itself,
+  // so the caller should retry at once rather than sleep or ask the user to
+  // confirm by hand.
+  it.each([undefined, "47"])("tells the caller to retry right away while MFA is pending (number: %s)", (numberMatch) => {
+    const error = toPublicError(new AuthProcessError("mfaPending", SECRET, numberMatch));
+    expect(error.message).toContain("Retry right away");
+    expect(error.message).toContain("45 seconds");
+    if (numberMatch) expect(error.message).toContain(`enter ${numberMatch}`);
+  });
+
   it("maps a non-mfaPending AuthProcessError to BrightspaceAuthFailedError", () => {
     const error = toPublicError(new AuthProcessError("busy", SECRET));
     expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");

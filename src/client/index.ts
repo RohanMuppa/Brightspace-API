@@ -51,7 +51,7 @@ export interface BrightspaceClientOptions {
    * "login": run the browser sign-in the way the MCP server does (AuthRunner → auth-cli
    * --automatic). The call then throws BrightspaceMfaPendingError as soon as the challenge
    * appears (with the number to enter, when there is one); the sign-in keeps running in the
-   * background and a retry after approval succeeds.
+   * background, and a retry joins it and waits up to 45 seconds for the approval.
    */
   onAuthExpired?: "fail" | "login";
   /** Receives the number-match digits (or null for a plain push) the moment they appear. Only with "login". */

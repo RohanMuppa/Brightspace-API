@@ -24,14 +24,28 @@ const AUTH_TIMEOUT_MS = 8 * 60 * 1000;
 const KILL_GRACE_MS = 5000;
 
 /**
- * How long a caller that joins a background child already reported as
- * mfaPending waits for it before re-answering with the same challenge.
- * Long enough for an already-approved login to finish its next ~2s poll and
- * mint a token; short enough that a not-yet-approved one still answers
- * within this tool call instead of blocking for the rest of the 5-minute
- * approval window.
+ * How long a retry that joins a background child already reported as
+ * mfaPending keeps waiting for it once the challenge is known: long enough
+ * to find a phone and approve. The retry used to wait only 5 s, so a caller
+ * that retried straight away just got the same BrightspaceMfaPendingError
+ * back while the user was still typing the number, and had to keep retrying
+ * (or sleep between retries) instead of the retry carrying the result.
  */
-const JOIN_GRACE_MS = 5000;
+const MFA_POLL_MS = 45000;
+
+/**
+ * The latest a polling retry is answered, counted from when it called run().
+ * A retry may first wait for the background child to reach its challenge, so
+ * the poll is cut short to keep any single call under a minute; a sign-in
+ * still unapproved by then re-answers with the challenge and the caller
+ * retries again.
+ */
+const CALL_BUDGET_MS = 55000;
+
+/** How long to poll after a challenge seen elapsedMs into the call. */
+function pollWindowMs(elapsedMs: number): number {
+  return Math.min(MFA_POLL_MS, CALL_BUDGET_MS - elapsedMs);
+}
 
 /**
  * The only two lines auth-cli.ts is allowed to hand back as structured data.
@@ -178,8 +192,17 @@ export class AuthRunner {
   /**
    * Authenticate, joining the login this process already started if there is
    * one. Returns true on success and throws a useful error on failure.
+   *
+   * A NEW sign-in answers the caller at once when an MFA challenge appears
+   * (an mfaPending error carrying the number to enter: the caller cannot see
+   * it any other way). The next call joins the background sign-in and polls
+   * it for up to MFA_POLL_MS, never past CALL_BUDGET_MS from that call, so an
+   * approval within the window completes the caller's original request; past
+   * it, the caller gets the same mfaPending answer again and is expected to
+   * retry once more.
    */
   async run(): Promise<boolean> {
+    const startedAt = Date.now();
     if (this.inFlight) {
       log("DEBUG", "Joining the authentication already in flight");
       return this.inFlight;
@@ -191,7 +214,7 @@ export class AuthRunner {
     // cross-process lock and return "busy".
     if (this.childDone) {
       log("DEBUG", "Joining the background sign-in still running from an earlier call");
-      return this.joinBackgroundChild(this.childDone);
+      return this.joinBackgroundChild(this.childDone, startedAt);
     }
 
     // The latch is released by the flow that owns it, as it settles, so a
@@ -209,43 +232,45 @@ export class AuthRunner {
   /**
    * Join a background child from an earlier early-answered call instead of
    * spawning a new one. A joiner must not simply await childDone: that
-   * blocks for whatever is left of the 5-minute approval window, exactly the
-   * problem run() otherwise fixes, since the caller usually retries right
-   * after reading "call this tool again" and well before actually approving.
+   * blocks for whatever is left of the 5-minute approval window, so a
+   * single call could hang for minutes.
    *
    * If no challenge has been reported yet (the child hasn't reached MFA),
    * wait for one — or for the child to finish on its own. Once a challenge
-   * is known, race the child against a short grace window: fast enough for
-   * an already-approved login to land, short enough to re-answer with the
-   * same challenge rather than block.
+   * is known, poll the child for the rest of this call's budget: the user
+   * read the number from the previous answer and is approving right now, so
+   * this is the call that should carry the result. A still-unapproved
+   * sign-in re-answers with the latest challenge and the caller tries again.
    */
-  private async joinBackgroundChild(childDone: Promise<boolean>): Promise<boolean> {
+  private async joinBackgroundChild(childDone: Promise<boolean>, startedAt: number): Promise<boolean> {
     if (!this.pendingChallenge && this.challengeSignal) {
       await Promise.race([childDone.catch(() => {}), this.challengeSignal]);
     }
 
     const challenge = this.pendingChallenge;
     if (!challenge) return childDone;
+    const pollMs = Math.max(0, pollWindowMs(Date.now() - startedAt));
 
     return new Promise<boolean>((resolve, reject) => {
       let settled = false;
-      const graceTimer = setTimeout(() => {
+      const pollTimer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        reject(new AuthProcessError(...mfaPendingFailure(challenge.numberMatch), challenge.numberMatch));
-      }, JOIN_GRACE_MS);
-      graceTimer.unref?.();
+        const numberMatch = this.pendingChallenge?.numberMatch ?? challenge.numberMatch;
+        reject(new AuthProcessError(...mfaPendingFailure(numberMatch), numberMatch));
+      }, pollMs);
+      pollTimer.unref?.();
       childDone.then(
         (value) => {
           if (settled) return;
           settled = true;
-          clearTimeout(graceTimer);
+          clearTimeout(pollTimer);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
-          clearTimeout(graceTimer);
+          clearTimeout(pollTimer);
           reject(error);
         },
       );

@@ -15,6 +15,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- With `onAuthExpired: "login"`, a retry after `BrightspaceMfaPendingError` now waits for the
+  approval instead of throwing the same error again after 5 seconds. The retry joins the sign-in
+  still running in the background and polls it for up to 45 seconds (never more than 55 seconds
+  from the start of that call), returning the original result as soon as the approval lands. The
+  error message now says to retry right away rather than wait, and the README example no longer
+  sleeps between retries. This applies to a long-lived client in one process; each `brightspace`
+  CLI invocation is a new process and is unchanged. Ported from
+  [RohanMuppa/brightspace-mcp-server#176](https://github.com/RohanMuppa/brightspace-mcp-server/pull/176).
 - `downloadFile` (and `brightspace download`) can now save files over 50 MB, such as large
   lecture decks. The body is streamed to a hidden `.download-<uuid>.part` file in the download
   directory, its type is checked there against the same allowlist, and it is then renamed into

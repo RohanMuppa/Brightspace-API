@@ -93,8 +93,10 @@ try {
 
 A process that is allowed to open a browser (an interactive script, not a cron job) can pass
 `onAuthExpired: "login"` instead. The call then throws `BrightspaceMfaPendingError` as soon as
-an MFA challenge appears — the sign-in keeps running in the background, and a retry after you
-approve it on your phone succeeds:
+an MFA challenge appears — the sign-in keeps running in the background. Retry straight away: a
+retry joins that sign-in and waits up to 45 seconds for you to approve it on your phone, returning
+the result as soon as it completes (and throwing `BrightspaceMfaPendingError` again if it is still
+unapproved by then):
 
 ```ts
 import { createBrightspaceClient, BrightspaceMfaPendingError } from "brightspace-api";
@@ -112,8 +114,7 @@ async function getCoursesRetrying() {
   } catch (error) {
     if (error instanceof BrightspaceMfaPendingError) {
       console.log(error.message);
-      await new Promise((r) => setTimeout(r, 15_000));
-      return getCoursesRetrying(); // retry after approving on your phone
+      return getCoursesRetrying(); // waits for the approval; no sleep needed
     }
     throw error;
   }
