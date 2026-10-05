@@ -15,6 +15,22 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getVideoTranscript` (and `brightspace transcript`) now resolves Brightspace LTI quickLinks such
+  as BoilerCast's `/d2l/common/dialogs/quickLink/quickLink.d2l?type=lti&rcode=...`, which named no
+  video and came back as an unknown platform. The link is requested with the saved session cookie
+  through the new `D2LApiClient.getPage()` (it never starts a sign-in), and the LTI launch page is
+  read for the video URL in its form action, iframe, or hidden fields; a school-branded Kaltura KAF
+  URL that carries only the entry ID gets its partner ID from `oauth_consumer_key`, and a quickLink
+  page that only frames a Brightspace tool launch is followed one page further. When the launch
+  names no video (an LTI 1.3 tool, say), the result is `hasTranscript: false` with a message saying
+  the LTI link could not be resolved, distinct from an unsupported platform. An absolute URL on the
+  configured Brightspace origin with a `/d2l/` path is handled the same as a relative one, while
+  the session is never sent to another origin: redirects are followed by hand within the
+  Brightspace origin only, and a redirect elsewhere is read as a candidate video URL without
+  credentials. D2L session query parameters (`d2lSessionVal`, `d2lSecureSessionVal`, any case) are
+  stripped from every returned URL and message, keeping routing parameters such as `ou`, `type`,
+  and `rcode`. Ported from
+  [RohanMuppa/brightspace-mcp-server#163](https://github.com/RohanMuppa/brightspace-mcp-server/pull/163).
 - With `onAuthExpired: "login"`, a retry after `BrightspaceMfaPendingError` now waits for the
   approval instead of throwing the same error again after 5 seconds. The retry joins the sign-in
   still running in the background and polls it for up to 45 seconds (never more than 55 seconds

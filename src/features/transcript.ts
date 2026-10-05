@@ -11,6 +11,8 @@ import type { FeatureContext } from "./context.js";
 import { BrightspaceInvalidArgumentError } from "../errors.js";
 import { cuesToText, paginateText } from "../utils/transcript/captions.js";
 import { detectVideoPlatform, extractKalturaIds, extractYouTubeVideoId, type VideoPlatform } from "../utils/transcript/platform.js";
+import { asVideoUrl, readLtiLaunchPage, toBrightspacePath } from "../utils/transcript/lti.js";
+import { stripSessionParams } from "../utils/session-params.js";
 import { getKalturaTranscript } from "../utils/transcript/kaltura.js";
 import { getYouTubeTranscript } from "../utils/transcript/youtube.js";
 import type { TranscriptResult } from "../utils/transcript/types.js";
@@ -71,6 +73,25 @@ async function resolveVideoUrl(api: D2LApiClient, courseId: number, topicId: num
   return { url: topic.Url };
 }
 
+/** The quickLink itself, plus one Brightspace page it frames (the tool launch). */
+const MAX_LTI_PAGES = 2;
+
+/** Request a Brightspace LTI link as the user and read its launch for the video it opens. */
+async function followLtiLaunch(api: D2LApiClient, path: string, baseUrl: string | undefined): Promise<string | null> {
+  let next = path;
+  for (let page = 0; page < MAX_LTI_PAGES; page++) {
+    const response = await api.getPage(next);
+    if (response === null) return null;
+    // Another origin's address is read, never requested with the session.
+    if ("redirect" in response) return asVideoUrl(response.redirect);
+    const finding = readLtiLaunchPage(response.html, baseUrl);
+    if (!finding) return null;
+    if ("videoUrl" in finding) return finding.videoUrl;
+    next = finding.nextPath;
+  }
+  return null;
+}
+
 async function fetchTranscript(
   platform: VideoPlatform,
   videoUrl: string,
@@ -79,14 +100,14 @@ async function fetchTranscript(
     case "kaltura": {
       const ids = extractKalturaIds(videoUrl);
       if (!ids) {
-        return { failed: `Could not find a Kaltura entry ID and partner ID in this URL: ${videoUrl}` };
+        return { failed: `Could not find a Kaltura entry ID and partner ID in this URL: ${stripSessionParams(videoUrl)}` };
       }
       return { result: await getKalturaTranscript(ids.partnerId, ids.entryId, fetch) };
     }
     case "youtube": {
       const videoId = extractYouTubeVideoId(videoUrl);
       if (!videoId) {
-        return { failed: `Could not find a YouTube video ID in this URL: ${videoUrl}` };
+        return { failed: `Could not find a YouTube video ID in this URL: ${stripSessionParams(videoUrl)}` };
       }
       return { result: await getYouTubeTranscript(videoId, fetch) };
     }
@@ -101,7 +122,7 @@ async function fetchTranscript(
       };
     default:
       return {
-        unsupported: `Could not identify a supported video platform for this URL: ${videoUrl}. Open the video in Brightspace directly.`,
+        unsupported: `Could not identify a supported video platform for this URL: ${stripSessionParams(videoUrl)}. Open the video in Brightspace directly.`,
       };
   }
 }
@@ -109,7 +130,9 @@ async function fetchTranscript(
 /**
  * The transcript of a video embedded in course content. Pass courseId and
  * topicId (from getCourseContent) to look the video up, or videoUrl directly
- * when the link is already known. Supports Kaltura and YouTube; other
+ * when the link is already known. Supports Kaltura (including a Brightspace
+ * LTI quickLink that launches it, read with the user's session cookie on the
+ * configured Brightspace origin only) and YouTube; other
  * platforms come back as an unavailable result naming what isn't supported
  * yet. NoTranscriptError / TranscriptFetchError from the adapters propagate
  * untouched — the client boundary maps them.
@@ -132,11 +155,32 @@ export async function getVideoTranscript(ctx: FeatureContext, args: GetVideoTran
     ]);
   }
 
+  const brightspacePath = toBrightspacePath(resolvedUrl, ctx.config.baseUrl);
+  if (brightspacePath !== null) {
+    const launchedUrl = await followLtiLaunch(ctx.api, brightspacePath, ctx.config.baseUrl);
+    if (!launchedUrl) {
+      const publicPath = stripSessionParams(brightspacePath);
+      return {
+        courseId,
+        topicId,
+        videoUrl: publicPath,
+        platform: "unknown",
+        hasTranscript: false,
+        message:
+          `This is a Brightspace LTI link (${publicPath}), and its launch did not reveal which video it opens. ` +
+          "Some tools only hand over the video after a browser sign-in to the tool itself, which this library " +
+          "can't do. The video platform itself may still be supported. Open it in Brightspace directly.",
+      };
+    }
+    resolvedUrl = launchedUrl;
+  }
+
   const platform = detectVideoPlatform(resolvedUrl);
   const outcome = await fetchTranscript(platform, resolvedUrl);
+  const publicUrl = stripSessionParams(resolvedUrl);
 
   if ("unsupported" in outcome) {
-    return { courseId, topicId, videoUrl: resolvedUrl, platform, hasTranscript: false, message: outcome.unsupported };
+    return { courseId, topicId, videoUrl: publicUrl, platform, hasTranscript: false, message: outcome.unsupported };
   }
   if ("failed" in outcome) {
     throw new BrightspaceInvalidArgumentError([outcome.failed]);
@@ -146,12 +190,12 @@ export async function getVideoTranscript(ctx: FeatureContext, args: GetVideoTran
   const fullText = cuesToText(result.cues);
   const { window, truncated, nextOffset, totalChars } = paginateText(fullText, offset, maxChars);
 
-  log("INFO", `getVideoTranscript: ${platform} transcript for ${resolvedUrl} (${result.cues.length} cues, ${totalChars} chars)`);
+  log("INFO", `getVideoTranscript: ${platform} transcript for ${publicUrl} (${result.cues.length} cues, ${totalChars} chars)`);
 
   return {
     courseId,
     topicId,
-    videoUrl: resolvedUrl,
+    videoUrl: publicUrl,
     platform,
     hasTranscript: true,
     title: result.title,
