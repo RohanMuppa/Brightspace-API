@@ -5,6 +5,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Added
+
+- TU Delft NetID sign-in via SURFconext: `--tudelft` in the setup wizard selects
+  `https://brightspace.tudelft.nl` and prompts for a NetID instead of an email address. The
+  flow is headless username/password sign-in only, including automatic re-authentication when
+  the saved session expires; it does not support MFA or any other interactive step. Ported
+  from [RohanMuppa/brightspace-mcp-server#65](https://github.com/RohanMuppa/brightspace-mcp-server/pull/65).
+
 ### Fixed
 
 - A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look
