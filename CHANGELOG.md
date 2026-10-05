@@ -15,6 +15,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getAssignmentFiles` and `getAnnouncementFiles` text extraction, and the `getSyllabus`
+  attachment read, no longer buffer an unbounded response body. They used `arrayBuffer()`, so a
+  missing or understated `Content-Length` let any size of body be held in memory before a size
+  check ran. A shared `readBodyCapped` helper counts the bytes actually received and cancels the
+  stream as soon as they pass the 50 MB in-memory limit. Attachment extraction also skips the
+  fetch entirely when the file's listed `Size` is already over the limit; either way the result
+  is `text: null` with a note to save the file with `downloadFile` (`brightspace download`)
+  instead. `getSyllabus` reports its existing "Attachment too large" note, or throws
+  `BrightspaceInvalidArgumentError` when `downloadPath` was given. The note for a file type that
+  cannot be read as text now names `downloadFile` rather than the MCP server's `download_file`
+  tool. Ported from
+  [RohanMuppa/brightspace-mcp-server#186](https://github.com/RohanMuppa/brightspace-mcp-server/issues/186).
+
 - `downloadFile` no longer refuses plain text, CSV, or JSON files over 50 MB. A file with no
   magic-byte signature was rejected as an undetectable type once it passed the 50 MB in-memory
   limit, even though disk downloads allow 2 GB, so a large text file was streamed to disk and then

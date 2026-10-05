@@ -3,6 +3,7 @@ import { deflateRawSync } from "node:zlib";
 import { getAssignmentFiles, fileKind } from "../../src/features/assignment-files.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
+import { oversizeBody, CHUNKS_AT_CAP } from "./oversize-body.js";
 
 /**
  * Reading the spec document attached to an assignment was the one student
@@ -75,7 +76,7 @@ function docxBuffer(text: string): Buffer {
 
 interface Setup {
   folders: unknown;
-  file?: Buffer | (() => never);
+  file?: Buffer | (() => never) | ReadableStream<Uint8Array>;
 }
 
 function setup({ folders, file }: Setup) {
@@ -91,15 +92,10 @@ function setup({ folders, file }: Setup) {
     getRaw: vi.fn(async (path: string) => {
       rawRequested.push(path);
       if (typeof file === "function") file();
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        arrayBuffer: async () => (file as Buffer).buffer.slice(
-          (file as Buffer).byteOffset,
-          (file as Buffer).byteOffset + (file as Buffer).byteLength
-        ),
-      };
+      if (file instanceof ReadableStream) {
+        return new Response(file, { status: 200, headers: { "Content-Length": "1" } });
+      }
+      return new Response(new Uint8Array(file as Buffer), { status: 200 });
     }),
   };
 
@@ -251,7 +247,7 @@ describe("getAssignmentFiles reading one file", () => {
     const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
     if (!("file" in result)) throw new Error("expected the file-read shape");
     expect(result.file.text).toBeNull();
-    expect(result.file.note).toMatch(/download_file/);
+    expect(result.file.note).toMatch(/downloadFile/);
   });
 
   it("skips the download when extractText is false", async () => {
@@ -269,6 +265,36 @@ describe("getAssignmentFiles reading one file", () => {
     if (!("file" in result)) throw new Error("expected the file-read shape");
 
     expect(result.file.text).toBeNull();
+    expect(rawRequested).toEqual([]);
+  });
+
+  it("stops reading an attachment whose body runs past the extraction limit", async () => {
+    // Content-Length: 1 and a listed Size of 1, but the body keeps going.
+    const { stream, state } = oversizeBody();
+    const { ctx } = setup({
+      folders: [folder(1, "Lab 4", [attachment(11, "spec.pdf", 1)])],
+      file: stream,
+    });
+
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
+
+    expect(result.file).toMatchObject({ fileId: 11, text: null });
+    expect(result.file.note).toMatch(/extraction limit.*downloadFile/);
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(CHUNKS_AT_CAP + 2);
+    expect(state.pulled).toBeLessThan(state.totalChunks);
+  });
+
+  it("refuses an attachment listed over the extraction limit without fetching it", async () => {
+    const { ctx, rawRequested } = setup({
+      folders: [folder(1, "Lab 4", [attachment(11, "huge.pdf", 3 * 1024 * 1024 * 1024)])],
+    });
+
+    const result = await getAssignmentFiles(ctx, { courseId: COURSE, folderId: 1, fileId: 11 });
+    if (!("file" in result)) throw new Error("expected the file-read shape");
+
+    expect(result.file.note).toMatch(/extraction limit/);
     expect(rawRequested).toEqual([]);
   });
 

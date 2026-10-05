@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { getAnnouncementFiles } from "../../src/features/announcement-files.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
+import { oversizeBody, CHUNKS_AT_CAP } from "./oversize-body.js";
 
 /**
  * Instructors attach handouts to announcements, not only to content or
@@ -56,7 +57,13 @@ function minimalPdf(text: string): Buffer {
   return Buffer.from(pdf, "latin1");
 }
 
-function setup({ newsItems, file = Buffer.alloc(0) }: { newsItems: unknown; file?: Buffer }) {
+function setup({
+  newsItems,
+  file = Buffer.alloc(0),
+}: {
+  newsItems: unknown;
+  file?: Buffer | ReadableStream<Uint8Array>;
+}) {
   const rawRequested: string[] = [];
 
   const api = {
@@ -64,12 +71,8 @@ function setup({ newsItems, file = Buffer.alloc(0) }: { newsItems: unknown; file
     get: vi.fn(async () => newsItems),
     getRaw: vi.fn(async (p: string) => {
       rawRequested.push(p);
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        arrayBuffer: async () => file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength),
-      };
+      if (file instanceof ReadableStream) return new Response(file, { status: 200 });
+      return new Response(new Uint8Array(file), { status: 200 });
     }),
   };
 
@@ -150,7 +153,35 @@ describe("getAnnouncementFiles reading one file", () => {
     const payload = await getAnnouncementFiles(ctx, { courseId: COURSE, newsId: 1, fileId: 77 });
 
     expect(payload.file).toMatchObject({ fileId: 77, fileName: "map.png", kind: "image", text: null });
-    expect(payload.file?.note).toMatch(/download_file/);
+    expect(payload.file?.note).toMatch(/downloadFile/);
+  });
+
+  it("stops reading an attachment whose body runs past the extraction limit", async () => {
+    // The listed Size understates the file and there is no Content-Length.
+    const { stream, state } = oversizeBody();
+    const { ctx } = setup({
+      newsItems: [news(1, "Field notes", [attachment(77, "prompts.pdf", 1)])],
+      file: stream,
+    });
+
+    const payload = await getAnnouncementFiles(ctx, { courseId: COURSE, newsId: 1, fileId: 77 });
+
+    expect(payload.file).toMatchObject({ fileId: 77, text: null });
+    expect(payload.file?.note).toMatch(/extraction limit.*downloadFile/);
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(CHUNKS_AT_CAP + 2);
+    expect(state.pulled).toBeLessThan(state.totalChunks);
+  });
+
+  it("refuses an attachment listed over the extraction limit without fetching it", async () => {
+    const { ctx, rawRequested } = setup({
+      newsItems: [news(1, "Field notes", [attachment(77, "huge.pdf", 3 * 1024 * 1024 * 1024)])],
+    });
+
+    const payload = await getAnnouncementFiles(ctx, { courseId: COURSE, newsId: 1, fileId: 77 });
+
+    expect(payload.file?.note).toMatch(/extraction limit/);
+    expect(rawRequested).toEqual([]);
   });
 
   it("throws BrightspaceNotFoundError naming the available files when the fileId is wrong", async () => {
