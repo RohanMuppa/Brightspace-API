@@ -23,12 +23,27 @@ export interface TokenManagerOptions {
   sessionDir?: string;
   /** Tenant base URL. Without it the cookie mint is not attempted. */
   baseUrl?: string;
-  /** Lifetime in seconds stamped on a minted token. */
+  /**
+   * Lifetime in seconds stamped on a minted token. Anything but a positive
+   * whole number is ignored (with a warning) in favour of the 3600 default.
+   */
   tokenTtl?: number;
   /** Injection seam for tests. */
   mint?: typeof mintAccessToken;
   /** Persistence injection keeps unit tests independent of native credentials. */
   sessionStore?: Pick<SessionStore, "load" | "save" | "clear" | "saveIfCurrent" | "clearIfCurrent">;
+}
+
+/**
+ * A programmatic caller can pass any number, or a hand-built AppConfig. NaN,
+ * zero, a negative or fractional lifetime would stamp a token that is already
+ * inside the refresh buffer, so every call would mint again.
+ */
+function resolveTokenTtl(tokenTtl: number | undefined): number {
+  if (tokenTtl === undefined) return DEFAULT_TOKEN_TTL_SECONDS;
+  if (Number.isSafeInteger(tokenTtl) && tokenTtl > 0) return tokenTtl;
+  log("WARN", `Ignoring tokenTtl=${String(tokenTtl)}: expected a positive whole number of seconds; using ${DEFAULT_TOKEN_TTL_SECONDS}`);
+  return DEFAULT_TOKEN_TTL_SECONDS;
 }
 
 /**
@@ -55,7 +70,7 @@ export class TokenManager {
 
     this.sessionStore = options.sessionStore ?? new SessionStore(options.sessionDir);
     this.baseUrl = options.baseUrl ? new URL(options.baseUrl).origin : undefined;
-    this.tokenTtl = options.tokenTtl ?? DEFAULT_TOKEN_TTL_SECONDS;
+    this.tokenTtl = resolveTokenTtl(options.tokenTtl);
     this.mint = options.mint ?? mintAccessToken;
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { withRetry, isRetryableFailure, retryAfterMsFrom } from "../../src/api/retry.js";
+import { withRetry, isRetryableFailure, parseRetryAfter, retryAfterMsFrom } from "../../src/api/retry.js";
 import { ApiError, RateLimitError, NetworkError } from "../../src/api/errors.js";
 
 /**
@@ -126,5 +126,40 @@ describe("retryAfterMsFrom", () => {
     expect(retryAfterMsFrom(new RateLimitError("/x", 7))).toBe(7000);
     expect(retryAfterMsFrom(new RateLimitError("/x"))).toBeUndefined();
     expect(retryAfterMsFrom(new ApiError(503, "/x", ""))).toBeUndefined();
+  });
+});
+
+describe("parseRetryAfter", () => {
+  const now = Date.parse("Wed, 21 Oct 2015 07:28:00 GMT");
+
+  it("reads delta-seconds, tolerating surrounding whitespace", () => {
+    expect(parseRetryAfter("120", now)).toBe(120);
+    expect(parseRetryAfter("  7 ", now)).toBe(7);
+    expect(parseRetryAfter("0", now)).toBe(0);
+  });
+
+  it("turns an HTTP-date into the seconds remaining until it", () => {
+    expect(parseRetryAfter("Wed, 21 Oct 2015 07:30:00 GMT", now)).toBe(120);
+    expect(parseRetryAfter(" Wed, 21 Oct 2015 07:28:01 GMT ", now)).toBe(1);
+  });
+
+  it("accepts the obsolete RFC 850 and asctime date forms", () => {
+    expect(parseRetryAfter("Wednesday, 21-Oct-15 07:29:00 GMT", now)).toBe(60);
+    expect(parseRetryAfter("Wed Oct 21 07:29:00 2015", now)).toBe(60);
+  });
+
+  it("rounds a partial second up", () => {
+    expect(parseRetryAfter("Wed, 21 Oct 2015 07:28:10 GMT", now + 500)).toBe(10);
+  });
+
+  it("treats a date at or before now as no requested wait", () => {
+    expect(parseRetryAfter("Wed, 21 Oct 2015 07:28:00 GMT", now)).toBeUndefined();
+    expect(parseRetryAfter("Wed, 21 Oct 2015 07:00:00 GMT", now)).toBeUndefined();
+  });
+
+  it("ignores anything that is neither form", () => {
+    for (const value of ["10abc", "", "   ", "-5", "1.5", "soon", "Wed, 21 Oct 2015", "1 2", null, undefined]) {
+      expect(parseRetryAfter(value, now)).toBeUndefined();
+    }
   });
 });
