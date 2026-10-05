@@ -15,6 +15,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `downloadFile` no longer refuses plain text, CSV, or JSON files over 50 MB. A file with no
+  magic-byte signature was rejected as an undetectable type once it passed the 50 MB in-memory
+  limit, even though disk downloads allow 2 GB, so a large text file was streamed to disk and then
+  deleted. Such files are now checked a chunk at a time (a streaming strict UTF-8 decode plus a NUL
+  byte scan, keeping only the leading text needed to recognise HTML and SVG), so memory stays
+  bounded at any size. Ported from
+  [RohanMuppa/brightspace-mcp-server#184](https://github.com/RohanMuppa/brightspace-mcp-server/issues/184).
+
 - Two concurrent `downloadFile` calls that save the same file name no longer lose one of the
   files. The finished temporary file was renamed onto a name `resolveFilenameConflict` had just
   reported free, and `rename()` overwrites, so both downloads could pick `deck.pdf` and the later
