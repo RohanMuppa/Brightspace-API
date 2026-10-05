@@ -15,6 +15,15 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A 429 whose `Retry-After` asks for more than 30 seconds now fails at once with
+  `BrightspaceRateLimitedError` instead of blocking the call for that long (an hour-long
+  `Retry-After` used to stall a call for up to two hours across retries). Shorter waits are still
+  honoured as before. The error message now states the wait Brightspace asked for
+  (`Rate limited by Brightspace. Retry after 3600s.`) so the caller can decide whether to wait it
+  out. The ceiling is `maxRetryAfterMs` in the internal retry settings (default 30 000 ms); it is
+  not exposed through `createBrightspaceClient`. Ported from
+  [RohanMuppa/brightspace-mcp-server#191](https://github.com/RohanMuppa/brightspace-mcp-server/issues/191).
+
 - `getAssignmentFiles` and `getAnnouncementFiles` text extraction, and the `getSyllabus`
   attachment read, no longer buffer an unbounded response body. They used `arrayBuffer()`, so a
   missing or understated `Content-Length` let any size of body be held in memory before a size

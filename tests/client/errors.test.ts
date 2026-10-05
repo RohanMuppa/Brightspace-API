@@ -77,6 +77,13 @@ describe("toPublicError", () => {
     const error = toPublicError(new RateLimitError("/some/path", 30));
     expect(error.code).toBe("BRIGHTSPACE_RATE_LIMITED");
     expect(error.name).toBe("BrightspaceRateLimitedError");
+    expect(error.message).toBe("Rate limited by Brightspace. Retry after 30s.");
+  });
+
+  it("keeps the generic rate-limit message when no Retry-After was given", () => {
+    expect(toPublicError(new RateLimitError("/some/path")).message).toBe(
+      "Rate limited by Brightspace. Wait a moment and retry.",
+    );
   });
 
   it("maps a 401 ApiError to BrightspaceAuthExpiredError", () => {

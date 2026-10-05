@@ -211,7 +211,15 @@ export function toPublicError(error: unknown): BrightspaceError {
   }
 
   // RateLimitError extends ApiError, so it must be checked first.
-  if (error instanceof RateLimitError) return new BrightspaceRateLimitedError();
+  // A Retry-After too long for the client to wait out is surfaced at once,
+  // so say how long Brightspace asked for rather than "a moment".
+  if (error instanceof RateLimitError) {
+    return new BrightspaceRateLimitedError(
+      error.retryAfter
+        ? `Rate limited by Brightspace. Retry after ${error.retryAfter}s.`
+        : undefined,
+    );
+  }
 
   if (error instanceof ApiError) {
     if (error.status === 401) return new BrightspaceAuthExpiredError();
