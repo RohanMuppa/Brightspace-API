@@ -7,6 +7,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look
+  expired and re-mint on each call. Only a positive whole number of seconds is honoured; anything
+  else is ignored with a warning on stderr and falls back to `tokenTtl` in `config.json`, then
+  `3600`. A hand-edited `tokenTtl` in `config.json` gets the same check, and a `TokenManager`
+  constructed with an invalid `tokenTtl` (directly or through `createBrightspaceClient({ config })`)
+  warns and uses `3600`. Ported from
+  [RohanMuppa/brightspace-mcp-server#55](https://github.com/RohanMuppa/brightspace-mcp-server/issues/55).
+- A 429 whose `Retry-After` is an HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`) is no longer
+  retried almost immediately. The header is now read as RFC 9110 allows: delta-seconds, or an
+  HTTP-date converted to the seconds remaining, rounded up. A date that has already passed, or a
+  value that is neither form (`10abc`), is ignored and the normal backoff applies instead of a
+  misread wait. JSON requests and file downloads share the same parser, and the `RateLimitError`
+  message states the wait for the date form too. Ported from
+  [RohanMuppa/brightspace-mcp-server#57](https://github.com/RohanMuppa/brightspace-mcp-server/issues/57).
 - `D2L_HEADLESS` and `D2L_ACTIVE_ONLY` are now read as real booleans: `true`/`1`/`yes`/`on` and
   `false`/`0`/`no`/`off`, case-insensitive with surrounding whitespace ignored. Previously
   anything other than the exact string `false` (including `0`, `no`, `False`, and typos) was read

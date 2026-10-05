@@ -46,9 +46,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     ?? true;
 
   // Resolve tokenTtl: env > store > default (3600)
-  const tokenTtl = process.env.D2L_TOKEN_TTL
-    ? parseInt(process.env.D2L_TOKEN_TTL, 10)
-    : store?.tokenTtl ?? 3600;
+  const tokenTtl = positiveSeconds(process.env.D2L_TOKEN_TTL, "D2L_TOKEN_TTL")
+    ?? positiveSeconds(store?.tokenTtl, "tokenTtl in config.json")
+    ?? 3600;
 
   // Resolve includeCourseIds: env > store > undefined
   const includeCourseIds = process.env.D2L_INCLUDE_COURSES
@@ -113,6 +113,19 @@ function envBoolean(value: string | undefined, source: string): boolean | undefi
   if (["true", "1", "yes", "on"].includes(text)) return true;
   if (["false", "0", "no", "off"].includes(text)) return false;
   console.error(`[config] Ignoring ${source}=${JSON.stringify(value)}: expected true or false`);
+  return undefined;
+}
+
+/**
+ * A token lifetime must be a whole, positive number of seconds. NaN, zero, a
+ * negative number, or "1h" read as 1 second would all produce a token that is
+ * already inside the refresh buffer, so every tool call would mint again.
+ */
+function positiveSeconds(value: string | number | undefined, source: string): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const text = String(value).trim();
+  if (/^\d+$/.test(text) && Number(text) > 0) return Number(text);
+  console.error(`[config] Ignoring ${source}=${JSON.stringify(value)}: expected a positive whole number of seconds`);
   return undefined;
 }
 

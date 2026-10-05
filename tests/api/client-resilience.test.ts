@@ -102,6 +102,46 @@ describe("D2LApiClient resilience", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("waits until the HTTP-date a 429 names, on both request paths", async () => {
+    const now = Date.parse("Wed, 21 Oct 2015 07:28:00 GMT");
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    try {
+      const c = await client(tokenManager(), { maxAttempts: 1 });
+      const later = { "Retry-After": "Wed, 21 Oct 2015 07:30:00 GMT" };
+      fetchMock
+        .mockResolvedValueOnce(json({}, { status: 429, headers: later }))
+        .mockResolvedValueOnce(json({}, { status: 429, headers: later }));
+
+      await expect(c.get("/d2l/api/lp/1.62/users/whoami")).rejects.toMatchObject({
+        retryAfter: 120,
+        message: expect.stringContaining("retry after 120s"),
+      });
+      await expect(c.getRaw("/d2l/api/le/1.96/1/content/topics/9/file")).rejects.toMatchObject({
+        retryAfter: 120,
+      });
+
+      const retrying = await client();
+      fetchMock
+        .mockResolvedValueOnce(json({}, { status: 429, headers: later }))
+        .mockResolvedValueOnce(json({ Identifier: "42" }));
+      await expect(retrying.get("/d2l/api/lp/1.62/users/whoami")).resolves.toEqual({ Identifier: "42" });
+      expect(sleep).toHaveBeenCalledWith(120_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to backoff when a 429's Retry-After is malformed", async () => {
+    const c = await client();
+    fetchMock
+      .mockResolvedValueOnce(json({}, { status: 429, headers: { "Retry-After": "10abc" } }))
+      .mockResolvedValueOnce(json({ Identifier: "42" }));
+
+    await c.get("/d2l/api/lp/1.62/users/whoami");
+
+    expect(sleep).toHaveBeenCalledWith(250);
+  });
+
   it("consumes a rate limiter token on every attempt, not once per call", async () => {
     const c = await client();
     const consume = vi.fn(async () => {});

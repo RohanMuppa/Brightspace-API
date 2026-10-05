@@ -462,5 +462,29 @@ describe("TokenManager", () => {
 
       expect(await positional.getToken()).toEqual(validToken);
     });
+
+    it.each([Number.NaN, 0, -5, 1.5, Number.POSITIVE_INFINITY])(
+      "stamps the 3600 default instead of an invalid tokenTtl=%s",
+      async (tokenTtl) => {
+        const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+        const manager = new TokenManager({
+          sessionDir: testDir,
+          baseUrl: BASE_URL,
+          tokenTtl,
+          mint: vi.fn(async () => ({ ok: true, accessToken: "fresh-jwt" }) as const),
+        });
+        await manager.setToken(expiredWithCookies());
+
+        const before = Date.now();
+        const minted = await manager.getToken();
+
+        expect(minted?.expiresAt).toBeGreaterThanOrEqual(before + 3600 * 1000);
+        expect(minted?.expiresAt).toBeLessThanOrEqual(Date.now() + 3600 * 1000);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("Ignoring tokenTtl"));
+        // The minted token is usable, so a second call does not mint again.
+        expect((await manager.getToken())?.accessToken).toBe("fresh-jwt");
+        warn.mockRestore();
+      },
+    );
   });
 });
