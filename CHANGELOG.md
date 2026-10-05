@@ -15,6 +15,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Two concurrent `downloadFile` calls that save the same file name no longer lose one of the
+  files. The finished temporary file was renamed onto a name `resolveFilenameConflict` had just
+  reported free, and `rename()` overwrites, so both downloads could pick `deck.pdf` and the later
+  one silently replaced the earlier. The file is now published with a hard link (or a copy with
+  `COPYFILE_EXCL` on filesystems without hard links), which fails instead of overwriting, and the
+  next free name (`deck(1).pdf`) is tried. The temporary file is removed on every path. Ported from
+  [RohanMuppa/brightspace-mcp-server#183](https://github.com/RohanMuppa/brightspace-mcp-server/issues/183).
+
 - `getVideoTranscript` (and `brightspace transcript`) now resolves Brightspace LTI quickLinks such
   as BoilerCast's `/d2l/common/dialogs/quickLink/quickLink.d2l?type=lti&rcode=...`, which named no
   video and came back as an unknown platform. The link is requested with the saved session cookie
