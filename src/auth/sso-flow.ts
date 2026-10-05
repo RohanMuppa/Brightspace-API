@@ -9,6 +9,7 @@ import type { AppConfig } from "../types/index.js";
 import { PurdueSSOFlow } from "./purdue-sso.js";
 import { SunySSOFlow, isSunyBrightspace } from "./suny-sso.js";
 import { WesternSSOFlow, isWesternBrightspace } from "./western-sso.js";
+import { TUDelftSSOFlow, isTUDelftBrightspace } from "./tudelft-sso.js";
 import { BrowserAuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 
@@ -74,6 +75,10 @@ export function createSSOFlow(config: AppConfig, requestMfaCode?: RequestMfaCode
 
   if (isWesternBrightspace(config.baseUrl)) {
     return new WesternSSOFlow(credentials);
+  }
+
+  if (isTUDelftBrightspace(config.baseUrl)) {
+    return new TUDelftSSOFlow(credentials);
   }
 
   return new PurdueSSOFlow(credentials);

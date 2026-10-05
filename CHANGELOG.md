@@ -5,6 +5,13 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Added
+
+- TU Delft NetID sign-in via SURFconext (`TUDelftSSOFlow`, `isTUDelftBrightspace`), registered
+  alongside the SUNY and Western flows, plus a `--tudelft` setup preset. Ported from
+  [RohanMuppa/brightspace-mcp-server#65](https://github.com/RohanMuppa/brightspace-mcp-server/pull/65)
+  ([#6](https://github.com/RohanMuppa/Brightspace-API/issues/6)).
+
 ### Fixed
 
 - A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look

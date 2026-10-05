@@ -10,9 +10,10 @@ It shares its configuration and saved sign-in session with
 [Relationship to brightspace-mcp-server](#relationship-to-brightspace-mcp-server)), so a user
 who has already run that project's `setup` wizard can start scripting immediately.
 
-Connects to D2L Brightspace. Automatic login supports Purdue's Microsoft Entra flow and SUNY
-campus selection. Other schools need a compatible automated sign-in flow; unsupported login
-pages return an actionable error.
+Connects to D2L Brightspace. Automatic login supports Purdue's Microsoft Entra flow, SUNY
+campus selection, Western University, and TU Delft's NetID sign-in via SURFconext. Other
+schools need a compatible automated sign-in flow; unsupported login pages return an actionable
+error.
 
 ## Install
 
@@ -32,7 +33,8 @@ npx -y brightspace-api@latest setup   # without installing first
 ```
 
 Purdue students can add `--purdue` to skip entering the school URL; SUNY campuses can add
-`--suny`. If you already run `brightspace-mcp-server` on this machine, you can skip this step —
+`--suny`; TU Delft students and staff can add `--tudelft`. If you already run
+`brightspace-mcp-server` on this machine, you can skip this step —
 the two packages read the same `~/.brightspace-mcp/config.json` and the same session under
 `~/.d2l-session/`.
 
@@ -237,10 +239,11 @@ through the client's options.
 
 ## Schools supported
 
-Automatic sign-in supports Purdue's Microsoft Entra flow and the shared SUNY Brightspace site
-(with campus selection). Other D2L schools can still be used — point `baseUrl` at your school's
-Brightspace URL — but an unsupported login page returns an actionable
-`BrightspaceAuthFailedError` (`kind: "unsupported"`) rather than hanging.
+Automatic sign-in supports Purdue's Microsoft Entra flow, the shared SUNY Brightspace site
+(with campus selection), Western University, and TU Delft's NetID sign-in via SURFconext.
+Other D2L schools can still be used — point `baseUrl` at your school's Brightspace URL — but an
+unsupported login page returns an actionable `BrightspaceAuthFailedError`
+(`kind: "unsupported"`) rather than hanging.
 
 ## Security notes
 

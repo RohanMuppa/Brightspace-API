@@ -5,6 +5,7 @@ const { SCHOOL_PRESETS, buildConfigToSave, presetForArgv } =
 const { createSSOFlow } = await import("../../src/auth/sso-flow.js");
 const { SunySSOFlow } = await import("../../src/auth/suny-sso.js");
 const { WesternSSOFlow } = await import("../../src/auth/western-sso.js");
+const { TUDelftSSOFlow } = await import("../../src/auth/tudelft-sso.js");
 const { PurdueSSOFlow } = await import("../../src/auth/purdue-sso.js");
 type AppConfig = import("../../src/types/index.js").AppConfig;
 
@@ -46,12 +47,14 @@ describe("school presets", () => {
     expect(flowFor(SCHOOL_PRESETS.western.baseUrl)).toBeInstanceOf(WesternSSOFlow);
     expect(flowFor(SCHOOL_PRESETS.suny.baseUrl)).toBeInstanceOf(SunySSOFlow);
     expect(flowFor(SCHOOL_PRESETS.purdue.baseUrl)).toBeInstanceOf(PurdueSSOFlow);
+    expect(flowFor(SCHOOL_PRESETS.tudelft.baseUrl)).toBeInstanceOf(TUDelftSSOFlow);
   });
 
   it("asks for a campus only where several campuses share one site", () => {
     expect(SCHOOL_PRESETS.suny.campusPrompt).toBeTruthy();
     expect(SCHOOL_PRESETS.western.campusPrompt).toBeUndefined();
     expect(SCHOOL_PRESETS.purdue.campusPrompt).toBeUndefined();
+    expect(SCHOOL_PRESETS.tudelft.campusPrompt).toBeUndefined();
   });
 });
 

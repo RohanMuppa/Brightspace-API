@@ -69,6 +69,14 @@ export const SCHOOL_PRESETS: Record<string, SchoolPreset> = {
     mfaNote: "Approve the sign-in request from your MFA app.",
     usernameHint: "Use your full sign-in address if your Western account requires it.",
   },
+  tudelft: {
+    name: "TU Delft",
+    baseUrl: "https://brightspace.tudelft.nl",
+    usernameLabel: "TU Delft NetID",
+    passwordLabel: "TU Delft NetID password",
+    mfaNote: "Approve the sign-in request from your MFA app.",
+    usernameHint: "Use your NetID (e.g. jdoe), not your student number.",
+  },
 };
 
 /**
