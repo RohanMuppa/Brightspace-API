@@ -15,6 +15,78 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A 429 whose `Retry-After` asks for more than 30 seconds now fails at once with
+  `BrightspaceRateLimitedError` instead of blocking the call for that long (an hour-long
+  `Retry-After` used to stall a call for up to two hours across retries). Shorter waits are still
+  honoured as before. The error message now states the wait Brightspace asked for
+  (`Rate limited by Brightspace. Retry after 3600s.`) so the caller can decide whether to wait it
+  out. The ceiling is `maxRetryAfterMs` in the internal retry settings (default 30 000 ms); it is
+  not exposed through `createBrightspaceClient`. Ported from
+  [RohanMuppa/brightspace-mcp-server#191](https://github.com/RohanMuppa/brightspace-mcp-server/issues/191).
+
+- `getAssignmentFiles` and `getAnnouncementFiles` text extraction, and the `getSyllabus`
+  attachment read, no longer buffer an unbounded response body. They used `arrayBuffer()`, so a
+  missing or understated `Content-Length` let any size of body be held in memory before a size
+  check ran. A shared `readBodyCapped` helper counts the bytes actually received and cancels the
+  stream as soon as they pass the 50 MB in-memory limit. Attachment extraction also skips the
+  fetch entirely when the file's listed `Size` is already over the limit; either way the result
+  is `text: null` with a note to save the file with `downloadFile` (`brightspace download`)
+  instead. `getSyllabus` reports its existing "Attachment too large" note, or throws
+  `BrightspaceInvalidArgumentError` when `downloadPath` was given. The note for a file type that
+  cannot be read as text now names `downloadFile` rather than the MCP server's `download_file`
+  tool. Ported from
+  [RohanMuppa/brightspace-mcp-server#186](https://github.com/RohanMuppa/brightspace-mcp-server/issues/186).
+
+- `downloadFile` no longer refuses plain text, CSV, or JSON files over 50 MB. A file with no
+  magic-byte signature was rejected as an undetectable type once it passed the 50 MB in-memory
+  limit, even though disk downloads allow 2 GB, so a large text file was streamed to disk and then
+  deleted. Such files are now checked a chunk at a time (a streaming strict UTF-8 decode plus a NUL
+  byte scan, keeping only the leading text needed to recognise HTML and SVG), so memory stays
+  bounded at any size. Ported from
+  [RohanMuppa/brightspace-mcp-server#184](https://github.com/RohanMuppa/brightspace-mcp-server/issues/184).
+
+- Two concurrent `downloadFile` calls that save the same file name no longer lose one of the
+  files. The finished temporary file was renamed onto a name `resolveFilenameConflict` had just
+  reported free, and `rename()` overwrites, so both downloads could pick `deck.pdf` and the later
+  one silently replaced the earlier. The file is now published with a hard link (or a copy with
+  `COPYFILE_EXCL` on filesystems without hard links), which fails instead of overwriting, and the
+  next free name (`deck(1).pdf`) is tried. The temporary file is removed on every path. Ported from
+  [RohanMuppa/brightspace-mcp-server#183](https://github.com/RohanMuppa/brightspace-mcp-server/issues/183).
+
+- `getVideoTranscript` (and `brightspace transcript`) now resolves Brightspace LTI quickLinks such
+  as BoilerCast's `/d2l/common/dialogs/quickLink/quickLink.d2l?type=lti&rcode=...`, which named no
+  video and came back as an unknown platform. The link is requested with the saved session cookie
+  through the new `D2LApiClient.getPage()` (it never starts a sign-in), and the LTI launch page is
+  read for the video URL in its form action, iframe, or hidden fields; a school-branded Kaltura KAF
+  URL that carries only the entry ID gets its partner ID from `oauth_consumer_key`, and a quickLink
+  page that only frames a Brightspace tool launch is followed one page further. When the launch
+  names no video (an LTI 1.3 tool, say), the result is `hasTranscript: false` with a message saying
+  the LTI link could not be resolved, distinct from an unsupported platform. An absolute URL on the
+  configured Brightspace origin with a `/d2l/` path is handled the same as a relative one, while
+  the session is never sent to another origin: redirects are followed by hand within the
+  Brightspace origin only, and a redirect elsewhere is read as a candidate video URL without
+  credentials. D2L session query parameters (`d2lSessionVal`, `d2lSecureSessionVal`, any case) are
+  stripped from every returned URL and message, keeping routing parameters such as `ou`, `type`,
+  and `rcode`. Ported from
+  [RohanMuppa/brightspace-mcp-server#163](https://github.com/RohanMuppa/brightspace-mcp-server/pull/163).
+- With `onAuthExpired: "login"`, a retry after `BrightspaceMfaPendingError` now waits for the
+  approval instead of throwing the same error again after 5 seconds. The retry joins the sign-in
+  still running in the background and polls it for up to 45 seconds (never more than 55 seconds
+  from the start of that call), returning the original result as soon as the approval lands. The
+  error message now says to retry right away rather than wait, and the README example no longer
+  sleeps between retries. This applies to a long-lived client in one process; each `brightspace`
+  CLI invocation is a new process and is unchanged. Ported from
+  [RohanMuppa/brightspace-mcp-server#176](https://github.com/RohanMuppa/brightspace-mcp-server/pull/176).
+- `downloadFile` (and `brightspace download`) can now save files over 50 MB, such as large
+  lecture decks. The body is streamed to a hidden `.download-<uuid>.part` file in the download
+  directory, its type is checked there against the same allowlist, and it is then renamed into
+  place (with the usual `name(1).ext` conflict handling); a refused or failed download leaves no
+  partial file behind. The cap is now 2 GB, checked against the listed size, `Content-Length`,
+  and the bytes actually received; a body that grows past it mid-stream fails with
+  `BrightspaceDownloadError` kind `tooLarge`. File downloads also time out only when the transfer
+  stalls for the request timeout, not when it simply takes longer than that in total. In-memory
+  reads (`getSyllabus` text extraction) keep the 50 MB limit. Ported from
+  [RohanMuppa/brightspace-mcp-server#164](https://github.com/RohanMuppa/brightspace-mcp-server/pull/164).
 - A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look
   expired and re-mint on each call. Only a positive whole number of seconds is honoured; anything
   else is ignored with a warning on stderr and falls back to `tokenTtl` in `config.json`, then

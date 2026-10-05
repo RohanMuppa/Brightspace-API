@@ -6,6 +6,7 @@ import { getSyllabus } from "../../src/features/syllabus.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { ApiError } from "../../src/api/index.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
+import { oversizeBody, CHUNKS_AT_CAP } from "./oversize-body.js";
 
 /**
  * The syllabus feature exposes the course overview as markdown and, when the
@@ -54,7 +55,7 @@ function setup({
   attachment,
 }: {
   overview: unknown | (() => never);
-  attachment?: { headers?: Record<string, string>; body: Buffer } | (() => never);
+  attachment?: { headers?: Record<string, string>; body: Buffer | ReadableStream<Uint8Array> } | (() => never);
 }) {
   const api = {
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
@@ -65,12 +66,8 @@ function setup({
     getRaw: vi.fn(async () => {
       if (!attachment) throw new ApiError(404, "/overview/attachment", "File not found");
       if (typeof attachment === "function") return (attachment as () => never)();
-      return {
-        ok: true,
-        status: 200,
-        headers: headersFrom(attachment.headers ?? {}),
-        arrayBuffer: async () => attachment.body.buffer.slice(attachment.body.byteOffset, attachment.body.byteOffset + attachment.body.byteLength),
-      };
+      const body = attachment.body instanceof ReadableStream ? attachment.body : new Uint8Array(attachment.body);
+      return new Response(body, { status: 200, headers: headersFrom(attachment.headers ?? {}) });
     }),
   };
   const ctx = { api, config: {}, version: "0.0.0-test" } as unknown as FeatureContext;
@@ -218,6 +215,35 @@ describe("getSyllabus downloadPath", () => {
       message: expect.stringMatching(/Attachment too large/),
     });
     expect(await walk(root)).toEqual([]);
+  });
+
+  it.each([
+    ["no Content-Length", {}],
+    ["Content-Length: 1", { "Content-Length": "1" }],
+  ])("stops reading an attachment body past 50 MB with %s", async (_label, headers) => {
+    const { stream, state } = oversizeBody();
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { ...headers, "Content-Disposition": 'attachment; filename="syllabus.pdf"' }, body: stream },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toMatchObject({
+      message: expect.stringMatching(/Attachment too large/),
+    });
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(CHUNKS_AT_CAP + 2);
+    expect(state.pulled).toBeLessThan(state.totalChunks);
+    expect(await walk(root)).toEqual([]);
+  });
+
+  it("notes an oversize attachment body instead of failing when only reading", async () => {
+    const { stream, state } = oversizeBody();
+    const { ctx } = setup({ overview: { Description: null }, attachment: { body: stream } });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.note).toMatch(/Attachment too large/);
+    expect(result.syllabusText).toBeUndefined();
+    expect(state.cancelled).toBe(true);
   });
 
   it("validates the download directory before ever fetching anything", async () => {

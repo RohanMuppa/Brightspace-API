@@ -4,6 +4,8 @@
  * Licensed under MIT — see LICENSE file for details.
  */
 
+import { createReadStream } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import sanitizeFilename from "sanitize-filename";
 import { DownloadError } from "./download-errors.js";
@@ -23,12 +25,12 @@ import { DownloadError } from "./download-errors.js";
  */
 // file-type v21 is ESM-only and costs ~50ms; defer the import to first use
 // since validateFileType is already async.
-let fileTypeFromBufferPromise: Promise<typeof import("file-type").fileTypeFromBuffer> | undefined;
-function getFileTypeFromBuffer() {
-  if (!fileTypeFromBufferPromise) {
-    fileTypeFromBufferPromise = import("file-type").then((m) => m.fileTypeFromBuffer);
+let fileTypePromise: Promise<typeof import("file-type")> | undefined;
+function getFileType() {
+  if (!fileTypePromise) {
+    fileTypePromise = import("file-type");
   }
-  return fileTypeFromBufferPromise;
+  return fileTypePromise;
 }
 
 const CFB_MIME = "application/x-cfb";
@@ -164,43 +166,82 @@ export async function validateFileType(
   }
 
   // Try magic byte detection first
-  const fileTypeFromBuffer = await getFileTypeFromBuffer();
+  const { fileTypeFromBuffer } = await getFileType();
   const detected = await fileTypeFromBuffer(buffer);
 
-  if (detected) {
-    if (detected.mime === XML_MIME) {
-      const ext = filename ? path.extname(filename).toLowerCase() : "";
-      const resolved = XML_EXTENSION_MIMES[ext];
-      if (resolved && allowedTypes.includes(resolved)) {
-        return { mime: resolved, ext: ext.slice(1) };
-      }
-      // Anything else falls through to the allowlist check, which refuses
-      // application/xml the way it always has.
-    }
-    if (detected.mime === CFB_MIME) {
-      const ext = filename ? path.extname(filename).toLowerCase() : "";
-      const resolved = CFB_EXTENSION_MIMES[ext];
-      if (resolved && allowedTypes.includes(resolved)) {
-        return { mime: resolved, ext: ext.slice(1) };
-      }
-      throw new DownloadError(
-        "unsupportedType",
-        `Compound File Binary with extension '${ext || "none"}' is not an allowed Office format`,
-        CFB_MIME
-      );
-    }
-    if (!allowedTypes.includes(detected.mime)) {
-      throw new DownloadError(
-        "unsupportedType",
-        `File type '${detected.mime}' not allowed`,
-        detected.mime
-      );
-    }
-    return { mime: detected.mime, ext: detected.ext };
+  if (detected) return allowDetectedType(detected, allowedTypes, filename);
+  return allowTextType(buffer, allowedTypes);
+}
+
+/**
+ * validateFileType for a file already on disk, so a download streamed there
+ * is never read back into memory whole. Magic bytes are read from the file
+ * itself; a file with none, the text fallback's case, is streamed through the
+ * same UTF-8 and NUL checks a chunk at a time, so plain text, CSV and JSON
+ * are held to the disk download limit rather than to MAX_FILE_SIZE.
+ */
+export async function validateFileTypeOfFile(
+  filePath: string,
+  allowedTypes: string[] = ALLOWED_MIME_TYPES,
+  filename?: string
+): Promise<{ mime: string; ext: string }> {
+  const { size } = await fs.stat(filePath);
+  if (size === 0) {
+    throw new DownloadError("undetectableType", "File is empty (0 bytes)");
   }
 
-  // Fallback for text-based files with no magic-byte signature: accept if the
-  // buffer decodes as UTF-8 (rejecting binaries and NUL bytes), then sniff HTML.
+  const { fileTypeFromFile } = await getFileType();
+  const detected = await fileTypeFromFile(filePath);
+
+  if (detected) return allowDetectedType(detected, allowedTypes, filename);
+  return allowTextTypeOfFile(filePath, allowedTypes);
+}
+
+/** The allowlist decision for a type file-type recognised from magic bytes. */
+function allowDetectedType(
+  detected: { mime: string; ext: string },
+  allowedTypes: string[],
+  filename: string | undefined
+): { mime: string; ext: string } {
+  if (detected.mime === XML_MIME) {
+    const ext = filename ? path.extname(filename).toLowerCase() : "";
+    const resolved = XML_EXTENSION_MIMES[ext];
+    if (resolved && allowedTypes.includes(resolved)) {
+      return { mime: resolved, ext: ext.slice(1) };
+    }
+    // Anything else falls through to the allowlist check, which refuses
+    // application/xml the way it always has.
+  }
+  if (detected.mime === CFB_MIME) {
+    const ext = filename ? path.extname(filename).toLowerCase() : "";
+    const resolved = CFB_EXTENSION_MIMES[ext];
+    if (resolved && allowedTypes.includes(resolved)) {
+      return { mime: resolved, ext: ext.slice(1) };
+    }
+    throw new DownloadError(
+      "unsupportedType",
+      `Compound File Binary with extension '${ext || "none"}' is not an allowed Office format`,
+      CFB_MIME
+    );
+  }
+  if (!allowedTypes.includes(detected.mime)) {
+    throw new DownloadError(
+      "unsupportedType",
+      `File type '${detected.mime}' not allowed`,
+      detected.mime
+    );
+  }
+  return { mime: detected.mime, ext: detected.ext };
+}
+
+/**
+ * Fallback for text-based files with no magic-byte signature: accept if the
+ * buffer decodes as UTF-8 (rejecting binaries and NUL bytes), then sniff HTML.
+ */
+function allowTextType(
+  buffer: Buffer,
+  allowedTypes: string[]
+): { mime: string; ext: string } {
   if (!buffer.includes(0)) {
     let decoded: string | null = null;
     try {
@@ -209,30 +250,75 @@ export async function validateFileType(
       // Invalid UTF-8 — treat as binary.
     }
 
-    if (decoded !== null) {
-      const noBom =
-        decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
-      const head = noBom.trimStart().toLowerCase();
-      let mime = "text/plain";
-      let ext = "txt";
-      if (head.startsWith("<!doctype html") || head.startsWith("<html")) {
-        mime = "text/html";
-        ext = "html";
-      } else if (head.startsWith("<svg") || head.startsWith("<!doctype svg")) {
-        // An SVG without the XML prolog reaches the fallback instead of being
-        // detected. Naming it text/plain told the caller the wrong type for a
-        // file the allowlist has an entry for.
-        mime = "image/svg+xml";
-        ext = "svg";
-      }
-
-      if (allowedTypes.includes(mime)) {
-        return { mime, ext };
-      }
-    }
+    if (decoded !== null) return allowTextHead(decoded, allowedTypes);
   }
 
-  throw new DownloadError(
+  throw undetectableText();
+}
+
+/**
+ * allowTextType for a file on disk, read a chunk at a time so memory stays
+ * bounded however large the file is. The decoder runs in streaming mode, so a
+ * multi-byte character split across chunks is still decoded, and only enough
+ * of the leading text to sniff HTML and SVG is kept.
+ */
+async function allowTextTypeOfFile(
+  filePath: string,
+  allowedTypes: string[]
+): Promise<{ mime: string; ext: string }> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let head = "";
+  try {
+    for await (const chunk of createReadStream(filePath)) {
+      const bytes = chunk as Buffer;
+      if (bytes.includes(0)) throw undetectableText();
+      const text = decoder.decode(bytes, { stream: true });
+      if (head.length < TEXT_HEAD_CHARS) {
+        // Leading whitespace is dropped by the sniff anyway; trimming it here
+        // keeps a file of nothing but whitespace from growing `head` unbounded.
+        head = (head + text.slice(0, TEXT_HEAD_CHARS)).trimStart();
+      }
+    }
+    head += decoder.decode();
+  } catch (error) {
+    if (error instanceof DownloadError) throw error;
+    if (error instanceof TypeError) throw undetectableText(); // Invalid UTF-8.
+    throw error;
+  }
+  return allowTextHead(head, allowedTypes);
+}
+
+/** Enough leading characters to recognise every prefix allowTextHead tests. */
+const TEXT_HEAD_CHARS = 64;
+
+/** Name decoded text by its leading characters and apply the allowlist. */
+function allowTextHead(
+  decoded: string,
+  allowedTypes: string[]
+): { mime: string; ext: string } {
+  const noBom = decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
+  const head = noBom.trimStart().toLowerCase();
+  let mime = "text/plain";
+  let ext = "txt";
+  if (head.startsWith("<!doctype html") || head.startsWith("<html")) {
+    mime = "text/html";
+    ext = "html";
+  } else if (head.startsWith("<svg") || head.startsWith("<!doctype svg")) {
+    // An SVG without the XML prolog reaches the fallback instead of being
+    // detected. Naming it text/plain told the caller the wrong type for a
+    // file the allowlist has an entry for.
+    mime = "image/svg+xml";
+    ext = "svg";
+  }
+
+  if (allowedTypes.includes(mime)) {
+    return { mime, ext };
+  }
+  throw undetectableText();
+}
+
+function undetectableText(): DownloadError {
+  return new DownloadError(
     "undetectableType",
     "Could not determine file type or type not allowed"
   );

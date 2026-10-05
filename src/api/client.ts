@@ -13,6 +13,13 @@ import { ApiError, RateLimitError, NetworkError } from "./errors.js";
 import { withRetry, isRetryableFailure, parseRetryAfter, retryAfterMsFrom, type RetryConfig } from "./retry.js";
 import { log } from "../utils/logger.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
+import { stripSessionParams } from "../utils/session-params.js";
+
+/** A Brightspace web page read as the user, or where it sent the user off this origin. */
+export type BrightspacePage = { html: string } | { redirect: string };
+
+/** Same-origin redirects getPage() follows before giving up. */
+const MAX_PAGE_REDIRECTS = 5;
 
 /** An ordinary course HTML link to the login page is not an expired session. */
 function isExpiredSessionRedirect(body: string, baseUrl: string): boolean {
@@ -40,6 +47,50 @@ function isExpiredSessionRedirect(body: string, baseUrl: string): boolean {
     if (target && expiredTarget(target)) return true;
   }
   return false;
+}
+
+/**
+ * An abort signal that fires after `ms` without progress. Each touch() restarts
+ * the countdown, so a slow transfer that keeps moving is never cut off while a
+ * stalled one still fails.
+ */
+function idleTimeout(ms: number) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const clear = () => clearTimeout(timer);
+  const touch = () => {
+    clear();
+    timer = setTimeout(
+      () => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+      ms,
+    );
+  };
+  touch();
+  return { signal: controller.signal, touch, clear };
+}
+
+/** Restart the idle timer on every chunk of the body; stop it at the end. */
+function touchOnProgress(response: Response, idle: ReturnType<typeof idleTimeout>): Response {
+  if (!response.body) {
+    idle.clear();
+    return response;
+  }
+  const body = response.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        idle.touch();
+        controller.enqueue(chunk);
+      },
+      flush() {
+        idle.clear();
+      },
+    }),
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 /**
@@ -244,6 +295,84 @@ export class D2LApiClient {
     return this.withAuthentication(resolved, token => this.makeRawRequest(resolved, token));
   }
 
+  /**
+   * Fetch a Brightspace web page (not an API route) as the signed-in user.
+   * Pages check the session cookie and ignore a Bearer token, so this sends
+   * the stored cookie. Returns null when no cookie is stored or the page
+   * answers with the login redirect: it never starts a login, since a page
+   * read by a read-only feature is not worth an MFA prompt.
+   *
+   * `path` is a `/d2l/...` path (or an absolute URL) on this client's own
+   * origin; anything that resolves to another origin returns null without a
+   * request. Redirects are followed by hand and only within this origin, so
+   * the cookie never leaves it: a redirect to another origin comes back as
+   * `{ redirect }` for the caller to read without credentials.
+   */
+  async getPage(path: string): Promise<BrightspacePage | null> {
+    const origin = new URL(this.baseUrl).origin;
+    let target: URL;
+    try {
+      target = new URL(path, origin);
+    } catch {
+      return null;
+    }
+    if (target.origin !== origin) return null;
+
+    const token = await this.tokenManager.getToken();
+    if (!token?.cookieHeader) return null;
+    const headers = this.buildAuthHeaders({ ...token, accessToken: `cookie:${token.cookieHeader}` });
+
+    for (let hop = 0; hop <= MAX_PAGE_REDIRECTS; hop++) {
+      if (target.pathname === "/d2l/login") return null;
+      const current = `${target.pathname}${target.search}`;
+      const response = await this.retrying(() => this.throttled(() => this.makePageRequest(current, headers)));
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) return null;
+        let next: URL;
+        try {
+          next = new URL(location, target);
+        } catch {
+          return null;
+        }
+        if (next.origin !== origin) return { redirect: next.href };
+        target = next;
+        continue;
+      }
+      if (response.status === 401) return null;
+      const body = await response.text();
+      if (!response.ok) throw new ApiError(response.status, stripSessionParams(current), body);
+      if (isExpiredSessionRedirect(body, this.baseUrl)) return null;
+      return { html: body };
+    }
+    return null;
+  }
+
+  /** One page request, redirects left unfollowed. Throws only what retrying() retries. */
+  private async makePageRequest(path: string, headers: Record<string, string>): Promise<Response> {
+    const publicPath = stripSessionParams(path);
+    log("DEBUG", `Requesting GET ${publicPath} (page)`);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new NetworkError(`Request to ${publicPath} failed: ${message}`, error instanceof Error ? error : undefined);
+    }
+    if (response.status === 429) {
+      throw new RateLimitError(publicPath, parseRetryAfter(response.headers.get("Retry-After")));
+    }
+    if (response.status >= 500 && response.status <= 599) {
+      throw new ApiError(response.status, publicPath, await response.text());
+    }
+    return response;
+  }
+
   /** One HTTP refresh and at most one browser login per caller. */
   private async withAuthentication<T>(path: string, request: (token: TokenData) => Promise<T>): Promise<T> {
     let token = await this.tokenManager.getToken();
@@ -408,6 +537,9 @@ export class D2LApiClient {
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const headers = this.buildAuthHeaders(token);
+    // A file can take far longer than timeoutMs to arrive. Time out on a
+    // stall rather than on total duration, for the headers and the body alike.
+    const idle = idleTimeout(this.timeoutMs);
 
     try {
       log("DEBUG", `Requesting GET ${path} (raw)`);
@@ -415,7 +547,7 @@ export class D2LApiClient {
       const response = await fetch(url, {
         method: "GET",
         headers,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: idle.signal,
       });
 
       // Preserve cookie material for the shared HTTP refresh path.
@@ -463,6 +595,7 @@ export class D2LApiClient {
         }
         // A legitimate HTML page: hand back an equivalent response with the
         // body we already consumed.
+        idle.clear();
         return new Response(body, {
           status: response.status,
           statusText: response.statusText,
@@ -471,8 +604,9 @@ export class D2LApiClient {
       }
 
       // Return raw response for caller to process
-      return response;
+      return touchOnProgress(response, idle);
     } catch (error) {
+      idle.clear();
       // Re-throw our own errors
       if (
         error instanceof ApiError ||

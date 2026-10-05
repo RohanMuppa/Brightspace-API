@@ -53,14 +53,24 @@ export class BrightspaceAuthExpiredError extends BrightspaceError {
  * is the Entra number to enter, when the tenant shows one. The sign-in keeps
  * running in the background; retry the call after approving.
  */
+/**
+ * A retry joins the background sign-in and waits for the approval itself, so
+ * the caller should retry at once rather than sleep or wait for the user to
+ * confirm they approved.
+ */
+const MFA_RETRY_GUIDANCE =
+  "Retry right away without waiting: the sign-in is finishing in the background, and each retry waits up to " +
+  "45 seconds for the approval and returns the result as soon as the sign-in completes. Keep retrying until it " +
+  "succeeds or fails with a different error.";
+
 export class BrightspaceMfaPendingError extends BrightspaceError {
   readonly numberMatch?: string;
   constructor(numberMatch?: string) {
     super(
       "BRIGHTSPACE_MFA_PENDING",
       numberMatch
-        ? `Open Microsoft Authenticator and enter ${numberMatch} within 5 minutes, then retry — the sign-in is finishing in the background.`
-        : "Approve the sign-in request on your phone (Microsoft Authenticator or Duo), then retry — the sign-in is finishing in the background.",
+        ? `Open Microsoft Authenticator and enter ${numberMatch} within 5 minutes. ${MFA_RETRY_GUIDANCE}`
+        : `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
     );
     this.name = "BrightspaceMfaPendingError";
     this.numberMatch = numberMatch;
@@ -153,7 +163,7 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
     `The sign-in did not complete. Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to see why, ` +
     "or `brightspace-setup` if the saved school or username is wrong.",
   mfaPending:
-    "Approve the sign-in request on your phone (Microsoft Authenticator or Duo), then retry — the sign-in is finishing in the background.",
+    `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
 };
 
 const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {
@@ -201,7 +211,15 @@ export function toPublicError(error: unknown): BrightspaceError {
   }
 
   // RateLimitError extends ApiError, so it must be checked first.
-  if (error instanceof RateLimitError) return new BrightspaceRateLimitedError();
+  // A Retry-After too long for the client to wait out is surfaced at once,
+  // so say how long Brightspace asked for rather than "a moment".
+  if (error instanceof RateLimitError) {
+    return new BrightspaceRateLimitedError(
+      error.retryAfter
+        ? `Rate limited by Brightspace. Retry after ${error.retryAfter}s.`
+        : undefined,
+    );
+  }
 
   if (error instanceof ApiError) {
     if (error.status === 401) return new BrightspaceAuthExpiredError();

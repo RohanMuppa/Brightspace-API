@@ -13,7 +13,8 @@ import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { MAX_FILE_SIZE } from "../utils/file-validator.js";
 import { extractPdfText } from "../utils/pdf-extractor.js";
-import { secureDownload } from "../utils/download-helpers.js";
+import { secureDownload, readBodyCapped } from "../utils/download-helpers.js";
+import { DownloadError } from "../utils/download-errors.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 import { log } from "../utils/logger.js";
 
@@ -124,11 +125,12 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
           attachmentFilename = match[1].replace(/['"]/g, "");
         }
 
-        const buffer = Buffer.from(await response.arrayBuffer());
-        if (buffer.length > MAX_FILE_SIZE) {
-          tooLargeMessage = `Attachment too large (${Math.round(buffer.length / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`;
-        } else {
-          attachmentBuffer = buffer;
+        // Capped read: Content-Length can be missing or understated.
+        try {
+          attachmentBuffer = await readBodyCapped(response, MAX_FILE_SIZE);
+        } catch (error) {
+          if (!(error instanceof DownloadError && error.kind === "tooLarge")) throw error;
+          tooLargeMessage = `Attachment too large (over ${MAX_FILE_SIZE / 1024 / 1024}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`;
         }
       }
     }

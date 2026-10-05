@@ -120,7 +120,8 @@ describe("D2LApiClient resilience", () => {
         retryAfter: 120,
       });
 
-      const retrying = await client();
+      // 120s is past the 30s default ceiling, so raise it for this client.
+      const retrying = await client(tokenManager(), { maxRetryAfterMs: 120_000 });
       fetchMock
         .mockResolvedValueOnce(json({}, { status: 429, headers: later }))
         .mockResolvedValueOnce(json({ Identifier: "42" }));
@@ -129,6 +130,16 @@ describe("D2LApiClient resilience", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("surfaces a 429 at once when its Retry-After is too long to wait out", async () => {
+    const c = await client();
+    fetchMock.mockResolvedValueOnce(json({}, { status: 429, headers: { "Retry-After": "3600" } }));
+
+    await expect(c.get("/d2l/api/lp/1.62/users/whoami")).rejects.toMatchObject({ retryAfter: 3600 });
+    expect(sleep).not.toHaveBeenCalled();
+    // The version discovery call plus one attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to backoff when a 429's Retry-After is malformed", async () => {

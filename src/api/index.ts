@@ -8,6 +8,7 @@
 
 // Main client
 export { D2LApiClient } from "./client.js";
+export type { BrightspacePage } from "./client.js";
 
 // Version discovery
 export { discoverVersions } from "./version-discovery.js";
