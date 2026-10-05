@@ -1,6 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   validateFileType,
+  validateFileTypeOfFile,
   validateDownloadPath,
   validateBaseUrl,
 } from "../../src/utils/file-validator.js";
@@ -204,5 +208,46 @@ describe("validateDownloadPath", () => {
     // sanitize-filename strips the separators, so this lands on either guard;
     // what matters is that it is typed and never escapes as a plain Error.
     if (error !== null) expect(error).toBeInstanceOf(DownloadError);
+  });
+});
+
+/**
+ * validateFileTypeOfFile is validateFileType for a download already streamed
+ * to disk. It must reach the same decisions without reading the file whole.
+ */
+describe("validateFileTypeOfFile", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "validate-file-"));
+  });
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const write = async (name: string, data: Buffer | string) => {
+    const p = path.join(dir, name);
+    await fs.writeFile(p, data);
+    return p;
+  };
+
+  it("reconciles a CFB container against its extension, as validateFileType does", async () => {
+    const p = await write("part", cfbBuffer());
+    await expect(validateFileTypeOfFile(p, undefined, "Essay.doc")).resolves.toEqual({ mime: "application/msword", ext: "doc" });
+    await expect(validateFileTypeOfFile(p, undefined, "setup.msi")).rejects.toMatchObject({ kind: "unsupportedType" });
+  });
+
+  it("accepts an SVG with an XML prolog under a .svg name", async () => {
+    const p = await write("part", '<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    await expect(validateFileTypeOfFile(p, undefined, "diagram.svg")).resolves.toMatchObject({ mime: "image/svg+xml" });
+  });
+
+  it("falls back to text detection for a file with no magic bytes", async () => {
+    const p = await write("part", "week 3 notes\n");
+    await expect(validateFileTypeOfFile(p, undefined, "notes.txt")).resolves.toEqual({ mime: "text/plain", ext: "txt" });
+  });
+
+  it("refuses an empty file", async () => {
+    const p = await write("part", "");
+    await expect(validateFileTypeOfFile(p)).rejects.toMatchObject({ kind: "undetectableType" });
   });
 });

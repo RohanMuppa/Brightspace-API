@@ -32,7 +32,23 @@ interface Setup {
   newsItem?: unknown;
   /** Content-Length header on the raw download. */
   contentLength?: number;
-  body?: Buffer;
+  body?: Buffer | ReadableStream<Uint8Array>;
+}
+
+/**
+ * A PDF of `megabytes` MB delivered in 1 MB chunks, so a test can push a file
+ * past the old 50 MB cap without ever holding it in one buffer.
+ */
+function largePdfStream(megabytes: number): ReadableStream<Uint8Array> {
+  const chunk = new Uint8Array(1024 * 1024);
+  let sent = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (sent === megabytes) return controller.close();
+      controller.enqueue(sent === 0 ? Buffer.concat([Buffer.from("%PDF-1.4\n"), chunk.subarray(9)]) : chunk);
+      sent += 1;
+    },
+  });
 }
 
 function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer() }: Setup) {
@@ -43,15 +59,13 @@ function setup({ disposition, submissions, newsItem, contentLength, body = pdfBu
     get: vi.fn(async (p: string) => (p.includes("/news/") ? newsItem : submissions)),
     getRaw: vi.fn(async (p: string) => {
       rawRequested.push(p);
-      return {
-        ok: true,
+      return new Response(body instanceof Buffer ? toArrayBuffer(body) : body, {
         status: 200,
-        headers: new Headers({
+        headers: {
           ...(disposition ? { "Content-Disposition": disposition } : {}),
           ...(contentLength !== undefined ? { "Content-Length": String(contentLength) } : {}),
-        }),
-        arrayBuffer: async () => toArrayBuffer(body),
-      };
+        },
+      });
     }),
   };
 
@@ -288,7 +302,7 @@ describe("downloadFile: announcement attachments", () => {
 
   it("refuses an attachment whose listed size is over the limit without downloading it", async () => {
     const { ctx, rawRequested } = setup({
-      newsItem: newsItem([file(77, "huge.pdf", 200 * 1024 * 1024)]),
+      newsItem: newsItem([file(77, "huge.pdf", 3 * 1024 * 1024 * 1024)]),
     });
 
     const error: Error = await downloadFile(ctx, {
@@ -305,7 +319,7 @@ describe("downloadFile: announcement attachments", () => {
   it("refuses a download whose Content-Length is over the limit", async () => {
     const { ctx } = setup({
       newsItem: newsItem([file(77, "prompts.pdf")]),
-      contentLength: 200 * 1024 * 1024,
+      contentLength: 3 * 1024 * 1024 * 1024,
     });
 
     const error: Error = await downloadFile(ctx, {
@@ -348,6 +362,47 @@ describe("downloadFile: announcement attachments", () => {
 
     expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
     expect(error.message).toContain("newsId and fileId");
+  });
+});
+
+/**
+ * brightspace-mcp-server#150: a 150 MB lecture deck was refused because every
+ * download was buffered in memory under a 50 MB cap. Downloads now stream to
+ * the file under a 2 GB cap.
+ */
+describe("downloadFile: files over 50 MB", () => {
+  it("saves a content file larger than 50 MB to disk at its full size", async () => {
+    const { ctx } = setup({
+      disposition: 'attachment; filename="Lecture 12.pdf"',
+      contentLength: 60 * 1024 * 1024,
+      body: largePdfStream(60),
+    });
+
+    const result = await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir });
+
+    expect((await fs.stat(path.join(targetDir, "Lecture 12.pdf"))).size).toBe(60 * 1024 * 1024);
+    expect(result).toMatchObject({ success: true, fileSize: 60 * 1024 * 1024, mimeType: "application/pdf" });
+  });
+
+  it("downloads a submission file whose listed size is over 50 MB", async () => {
+    const { ctx } = setup({
+      submissions: [{ Id: 900, Files: [{ FileId: 22, FileName: "recording.pdf", Size: 150 * 1024 * 1024 }] }],
+    });
+
+    const result = await downloadFile(ctx, { courseId: COURSE, folderId: 5, fileId: 22, downloadPath: targetDir });
+
+    expect(result.filePath).toBe(path.join(targetDir, "recording.pdf"));
+  });
+
+  it("leaves no partial file behind when the type check refuses a streamed download", async () => {
+    const { ctx } = setup({
+      disposition: 'attachment; filename="setup.pdf"',
+      body: Buffer.concat([Buffer.from("MZ"), Buffer.alloc(4096, 0xff)]),
+    });
+
+    await downloadFile(ctx, { courseId: COURSE, topicId: 7, downloadPath: targetDir }).catch(() => {});
+
+    expect(await walk(root)).toEqual([]);
   });
 });
 

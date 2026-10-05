@@ -15,6 +15,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `downloadFile` (and `brightspace download`) can now save files over 50 MB, such as large
+  lecture decks. The body is streamed to a hidden `.download-<uuid>.part` file in the download
+  directory, its type is checked there against the same allowlist, and it is then renamed into
+  place (with the usual `name(1).ext` conflict handling); a refused or failed download leaves no
+  partial file behind. The cap is now 2 GB, checked against the listed size, `Content-Length`,
+  and the bytes actually received; a body that grows past it mid-stream fails with
+  `BrightspaceDownloadError` kind `tooLarge`. File downloads also time out only when the transfer
+  stalls for the request timeout, not when it simply takes longer than that in total. In-memory
+  reads (`getSyllabus` text extraction) keep the 50 MB limit. Ported from
+  [RohanMuppa/brightspace-mcp-server#164](https://github.com/RohanMuppa/brightspace-mcp-server/pull/164).
 - A malformed `D2L_TOKEN_TTL` (`abc`, `0`, `-5`, `1h`) no longer makes every saved token look
   expired and re-mint on each call. Only a positive whole number of seconds is honoured; anything
   else is ignored with a warning on stderr and falls back to `tokenTtl` in `config.json`, then

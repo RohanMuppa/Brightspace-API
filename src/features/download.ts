@@ -10,12 +10,11 @@ import path from "node:path";
 import { DownloadFileSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { log } from "../utils/logger.js";
-// Path containment and magic-byte checks belong to secureDownload, which both
-// download paths below go through; importing them here only made it look as
-// though this module validated anything itself.
-import { MAX_FILE_SIZE } from "../utils/file-validator.js";
+// Path containment and magic-byte checks belong to secureStreamDownload, which
+// every download path below goes through; importing them here only made it
+// look as though this module validated anything itself.
 import { DownloadError } from "../utils/download-errors.js";
-import { secureDownload } from "../utils/download-helpers.js";
+import { secureStreamDownload } from "../utils/download-helpers.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 
 export type DownloadFileArgs = z.input<typeof DownloadFileSchema>;
@@ -54,8 +53,59 @@ export function parseContentDispositionFilename(disposition: string): string | n
   return null;
 }
 
+/**
+ * Maximum bytes of a file downloadFile will save. Downloads stream straight to
+ * the file, so memory no longer bounds them the way MAX_FILE_SIZE (50 MB)
+ * bounds in-memory reads such as getSyllabus's text extraction; this only
+ * stops a runaway body filling the disk. Lecture decks and recordings
+ * routinely pass 50 MB.
+ */
+export const DISK_MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
+
 const oversizeMessage = (bytes: number) =>
-  `File too large (${Math.round(bytes / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`;
+  `File too large (${Math.round(bytes / 1024 / 1024)}MB). Maximum allowed: ${DISK_MAX_FILE_SIZE / 1024 / 1024}MB`;
+
+/**
+ * Finish a download once the response is in hand: refuse it on its
+ * Content-Length, then stream the body to disk under the size cap.
+ */
+async function finishDownload(
+  response: Response,
+  originalFilename: string,
+  downloadPath: string,
+  customFilename: string | undefined,
+  sourceLabel: string
+): Promise<DownloadResult> {
+  // Check Content-Length BEFORE reading the body
+  const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
+  if (contentLength > DISK_MAX_FILE_SIZE) {
+    throw new DownloadError("tooLarge", oversizeMessage(contentLength));
+  }
+
+  if (!response.body) {
+    throw new DownloadError("undetectableType", "File is empty (0 bytes)");
+  }
+
+  // Streams to disk with path traversal prevention, file type validation,
+  // conflict resolution, and the size cap
+  const result = await secureStreamDownload({
+    targetDir: downloadPath,
+    filename: customFilename || originalFilename,
+    body: response.body,
+    maxBytes: DISK_MAX_FILE_SIZE,
+  });
+
+  log("INFO", `${sourceLabel} downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`);
+
+  return {
+    success: true,
+    filePath: result.path,
+    fileSize: result.size,
+    mimeType: result.mime,
+    originalFilename,
+    message: `File downloaded successfully to ${result.path}`,
+  };
+}
 
 /**
  * Download a file from course content, a dropbox submission, or an
@@ -117,42 +167,11 @@ async function downloadContentFile(
   const apiPath = ctx.api.le(courseId, `/content/topics/${topicId}/file`);
   const response = await ctx.api.getRaw(apiPath);
 
-  // Check Content-Length BEFORE downloading body (prevent memory exhaustion)
-  const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
-  if (contentLength > MAX_FILE_SIZE) {
-    throw new DownloadError("tooLarge", oversizeMessage(contentLength));
-  }
-
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const filename = parseContentDispositionFilename(disposition) ?? "download";
   log("DEBUG", `Content-Disposition filename: ${filename}`);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-
-  // Double-check actual size
-  if (buffer.length > MAX_FILE_SIZE) {
-    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
-  }
-
-  const originalFilename = filename;
-  const effectiveFilename = customFilename || filename;
-
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log("INFO", `File downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`);
-
-  return {
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  };
+  return finishDownload(response, filename, downloadPath, customFilename, "Content file");
 }
 
 interface DropboxSubmission {
@@ -212,7 +231,7 @@ async function downloadSubmissionFile(
   }
 
   // Check file size before downloading
-  if (file.Size > MAX_FILE_SIZE) {
+  if (file.Size > DISK_MAX_FILE_SIZE) {
     throw new DownloadError("tooLarge", oversizeMessage(file.Size));
   }
 
@@ -223,32 +242,8 @@ async function downloadSubmissionFile(
     `/dropbox/folders/${folderId}/submissions/${submission.Id}/files/${fileId}/download`
   );
   const response = await ctx.api.getRaw(downloadApiPath);
-  const buffer = Buffer.from(await response.arrayBuffer());
 
-  // Double-check actual size
-  if (buffer.length > MAX_FILE_SIZE) {
-    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
-  }
-
-  const originalFilename = file.FileName;
-  const effectiveFilename = customFilename || file.FileName;
-
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log("INFO", `Submission file downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`);
-
-  return {
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  };
+  return finishDownload(response, file.FileName, downloadPath, customFilename, "Submission file");
 }
 
 interface NewsItem {
@@ -282,46 +277,15 @@ async function downloadNewsAttachment(
     );
   }
 
-  if (file.Size > MAX_FILE_SIZE) {
+  if (file.Size > DISK_MAX_FILE_SIZE) {
     throw new DownloadError("tooLarge", oversizeMessage(file.Size));
   }
 
   // GET /d2l/api/le/(version)/(orgUnitId)/news/(newsItemId)/attachments/(fileId)
   const response = await ctx.api.getRaw(ctx.api.le(courseId, `/news/${newsId}/attachments/${fileId}`));
 
-  // Check Content-Length BEFORE downloading body (prevent memory exhaustion)
-  const contentLength = parseInt(response.headers.get("Content-Length") ?? "0", 10);
-  if (contentLength > MAX_FILE_SIZE) {
-    throw new DownloadError("tooLarge", oversizeMessage(contentLength));
-  }
-
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const filename = parseContentDispositionFilename(disposition) ?? file.FileName;
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-
-  // Double-check actual size
-  if (buffer.length > MAX_FILE_SIZE) {
-    throw new DownloadError("tooLarge", oversizeMessage(buffer.length));
-  }
-
-  const originalFilename = filename;
-  const effectiveFilename = customFilename || filename;
-
-  const result = await secureDownload({
-    targetDir: downloadPath,
-    filename: effectiveFilename,
-    data: buffer,
-  });
-
-  log("INFO", `Announcement attachment downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`);
-
-  return {
-    success: true,
-    filePath: result.path,
-    fileSize: result.size,
-    mimeType: result.mime,
-    originalFilename,
-    message: `File downloaded successfully to ${result.path}`,
-  };
+  return finishDownload(response, filename, downloadPath, customFilename, "Announcement attachment");
 }
