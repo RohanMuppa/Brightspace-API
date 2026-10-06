@@ -264,12 +264,76 @@ describe("AuthRunner", () => {
   });
 
   it("allows five minutes of MFA plus preflight before timing out", async () => {
-    const result = new AuthRunner().run();
+    const runner = new AuthRunner();
+    void runner.run().catch(() => {});
     await vi.advanceTimersByTimeAsync(6 * 60000);
     expect(kill).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
+    const joined = runner.run();
     child.emit("close", 0);
-    await result;
+    expect(await joined).toBe(true);
+  });
+
+  describe("a sign-in that has not reached MFA by the end of the call budget", () => {
+    it("answers the caller 55 seconds into the call that it is still signing in", async () => {
+      const result = new AuthRunner().run();
+      const failure = expect(result).rejects.toMatchObject({ kind: "inProgress" });
+      await vi.advanceTimersByTimeAsync(55000);
+      await failure;
+      child.emit("close", 0);
+    });
+
+    it("is still waiting just before 55 seconds into the call", async () => {
+      let settled = false;
+      void new AuthRunner().run().then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(54000);
+
+      expect(settled).toBe(false);
+      child.emit("close", 0);
+    });
+
+    it("keeps the sign-in running in the background", async () => {
+      const result = new AuthRunner().run();
+      const failure = expect(result).rejects.toMatchObject({ kind: "inProgress" });
+      await vi.advanceTimersByTimeAsync(55000);
+      await failure;
+
+      expect(kill).not.toHaveBeenCalled();
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit("close", 0);
+    });
+
+    it("lets the next call join that same sign-in and answer with its challenge", async () => {
+      const runner = new AuthRunner();
+      const first = expect(runner.run()).rejects.toMatchObject({ kind: "inProgress" });
+      await vi.advanceTimersByTimeAsync(55000);
+      await first;
+
+      const second = expect(runner.run()).rejects.toMatchObject({ kind: "mfaPending", numberMatch: "47" });
+      child.stdout.write("MFA_NUMBER:47\n");
+      await second;
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      child.emit("close", 0);
+    });
+
+    it("bounds a caller that joined the in-flight sign-in from when that caller started", async () => {
+      const runner = new AuthRunner();
+      const first = expect(runner.run()).rejects.toMatchObject({ kind: "inProgress" });
+      await vi.advanceTimersByTimeAsync(30000);
+      let settled = false;
+      const second = runner.run();
+      void second.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(25000);
+      await first;
+      expect(settled).toBe(false);
+
+      const secondFailure = expect(second).rejects.toMatchObject({ kind: "inProgress" });
+      await vi.advanceTimersByTimeAsync(30000);
+      await secondFailure;
+      expect(spawn).toHaveBeenCalledTimes(1);
+      child.emit("close", 0);
+    });
   });
 
   it("force-stops a hung child tree and releases its in-process lock", async () => {

@@ -34,11 +34,13 @@ const KILL_GRACE_MS = 5000;
 const MFA_POLL_MS = 45000;
 
 /**
- * The latest a polling retry is answered, counted from when it called run().
- * A retry may first wait for the background child to reach its challenge, so
- * the poll is cut short to keep any single call under a minute; a sign-in
- * still unapproved by then re-answers with the challenge and the caller
- * retries again.
+ * The latest any caller is answered, counted from when it called run().
+ * Browser launch and the SSO pages can take half a minute before the
+ * challenge even appears, so the poll is cut short to keep any single call
+ * under a minute; a sign-in still unapproved by then re-answers with the
+ * challenge, and one that has not reached MFA at all answers inProgress
+ * while it keeps running. Either way the caller retries and joins the same
+ * child, so no second MFA prompt is sent.
  */
 const CALL_BUDGET_MS = 55000;
 
@@ -64,7 +66,7 @@ function mfaPendingFailure(numberMatch: string | undefined): [AuthFailureKind, s
     : ["mfaPending", "An MFA approval was not completed in time. Try again."];
 }
 
-export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending";
+export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "inProgress";
 
 export class AuthProcessError extends AuthError {
   constructor(
@@ -86,6 +88,23 @@ export class AuthProcessError extends AuthError {
 export interface AuthRunnerOptions {
   timeoutMs?: number;
   onProgress?: (line: string) => void;
+}
+
+/**
+ * Settle with work's outcome, or with inProgress once CALL_BUDGET_MS has
+ * passed since startedAt. Only the caller stops waiting: work carries on.
+ */
+function withinCallBudget(work: Promise<boolean>, startedAt: number): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    const budgetTimer = setTimeout(() => {
+      reject(new AuthProcessError("inProgress", "Sign-in is still running in the background. Try again."));
+    }, Math.max(0, CALL_BUDGET_MS - (Date.now() - startedAt)));
+    budgetTimer.unref?.();
+    work.then(
+      (value) => { clearTimeout(budgetTimer); resolve(value); },
+      (error) => { clearTimeout(budgetTimer); reject(error); },
+    );
+  });
 }
 
 /** Chromium can lead a separate process group, so a forced stop needs its PID. */
@@ -199,10 +218,16 @@ export class AuthRunner {
    * it for up to MFA_POLL_MS, never past CALL_BUDGET_MS from that call, so an
    * approval within the window completes the caller's original request; past
    * it, the caller gets the same mfaPending answer again and is expected to
-   * retry once more.
+   * retry once more. No caller waits past CALL_BUDGET_MS: a sign-in still
+   * short of its challenge by then answers inProgress and keeps running for
+   * the next call to join.
    */
   async run(): Promise<boolean> {
     const startedAt = Date.now();
+    return withinCallBudget(this.runOnce(startedAt), startedAt);
+  }
+
+  private runOnce(startedAt: number): Promise<boolean> {
     if (this.inFlight) {
       log("DEBUG", "Joining the authentication already in flight");
       return this.inFlight;

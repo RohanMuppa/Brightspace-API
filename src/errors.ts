@@ -162,6 +162,10 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
   failed:
     `The sign-in did not complete. Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to see why, ` +
     "or `brightspace-setup` if the saved school or username is wrong.",
+  inProgress:
+    "Brightspace sign-in is still starting in the background (opening the browser and the school's login pages). " +
+    "Retry now: the next call joins the same sign-in, so no second MFA prompt is sent, and it reports the number " +
+    "to approve as soon as one appears.",
   mfaPending:
     `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
 };
