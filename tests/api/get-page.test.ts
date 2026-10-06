@@ -133,6 +133,35 @@ describe("D2LApiClient.getPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "https://user:pw@purdue.brightspace.com/d2l/home",
+    "https://user@purdue.brightspace.com/d2l/home",
+    "https://evil.example/d2l/home",
+    "/\\evil.example/d2l/home",
+  ])("refuses %s without reading the cookie or sending a request", async path => {
+    const { client, fetchMock } = makeClient(browserToken());
+    const getToken = (client as unknown as { tokenManager: { getToken: ReturnType<typeof vi.fn> } }).tokenManager
+      .getToken;
+
+    expect(await client.getPage(path)).toBeNull();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["@evil.example/d2l/home", ".evil.example/d2l/home", ":8443/d2l/home"])(
+    "resolves %s against the Brightspace origin, never another host",
+    async path => {
+      const { client, fetchMock } = makeClient(browserToken());
+      fetchMock.mockResolvedValue(html("ok"));
+
+      await client.getPage(path);
+
+      for (const [url] of fetchMock.mock.calls) {
+        expect(new URL(url as string).origin).toBe(BASE);
+      }
+    }
+  );
+
   it("keeps session query parameters out of the error it throws", async () => {
     const { client, fetchMock } = makeClient(browserToken());
     fetchMock.mockResolvedValue(html("forbidden", 403));

@@ -15,6 +15,13 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getVideoTranscript` no longer treats a URL that carries userinfo
+  (`https://user:pw@purdue.brightspace.com/d2l/...`) as a link into the configured Brightspace,
+  and `D2LApiClient.getPage()` refuses such a URL before it reads the session cookie. Only a
+  relative `/d2l/` link or an absolute URL on exactly the configured origin, with no userinfo, is
+  requested with the session. Ported from
+  [RohanMuppa/brightspace-mcp-server#190](https://github.com/RohanMuppa/brightspace-mcp-server/issues/190).
+
 - A 429 whose `Retry-After` asks for more than 30 seconds now fails at once with
   `BrightspaceRateLimitedError` instead of blocking the call for that long (an hour-long
   `Retry-After` used to stall a call for up to two hours across retries). Shorter waits are still
