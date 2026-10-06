@@ -15,6 +15,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Automatic re-authentication (`onAuthExpired: "login"`) now answers every caller within 55
+  seconds of that call starting, including while Chromium is still launching or silent SSO is
+  still waiting. Before, a slow sign-in could hold a call for up to 8 minutes. When the budget
+  runs out, the call fails with `BrightspaceAuthFailedError` (`kind: "inProgress"`) and the
+  sign-in keeps running in the background. Retrying right away joins it, so no second MFA
+  prompt is sent. Ported from
+  [RohanMuppa/brightspace-mcp-server#189](https://github.com/RohanMuppa/brightspace-mcp-server/pull/189).
+
 - `getVideoTranscript` no longer treats a URL that carries userinfo
   (`https://user:pw@purdue.brightspace.com/d2l/...`) as a link into the configured Brightspace,
   and `D2LApiClient.getPage()` refuses such a URL before it reads the session cookie. Only a
