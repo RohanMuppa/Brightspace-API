@@ -47,6 +47,16 @@ describe("toPublicError", () => {
     expect(error.message).not.toContain(SECRET);
   });
 
+  // The call budget ran out before the sign-in reached MFA; the sign-in keeps
+  // running, so the caller should retry (and join it) rather than give up.
+  it("maps an inProgress AuthProcessError to a retryable BrightspaceAuthFailedError", () => {
+    const error = toPublicError(new AuthProcessError("inProgress", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((error as { kind?: string }).kind).toBe("inProgress");
+    expect(error.message).toContain("Retry now");
+    expect(error.message).not.toContain(SECRET);
+  });
+
   it("maps TokenRefreshError to BrightspaceNetworkError before the ApiError/NetworkError branches see it", () => {
     const error = toPublicError(new TokenRefreshError(SECRET));
     expect(error.code).toBe("BRIGHTSPACE_NETWORK");

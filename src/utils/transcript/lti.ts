@@ -27,8 +27,9 @@ export function isBrightspaceRelativeLink(url: string): boolean {
  * The path and query of a link into the user's own Brightspace, or null for
  * anything else. A relative `/d2l/` link qualifies, and so does an absolute
  * URL on the configured Brightspace origin whose path starts with `/d2l/`,
- * so both take the same authenticated route. A URL on any other origin
- * (or a protocol-relative `//host/...`) is never a Brightspace link: the
+ * so both take the same authenticated route. A URL on any other origin (a
+ * lookalike host, an http: downgrade, a different port, a protocol-relative
+ * `//host/...`, or one carrying userinfo) is never a Brightspace link: the
  * session must not travel there.
  */
 export function toBrightspacePath(url: string, baseUrl?: string): string | null {
@@ -47,7 +48,8 @@ export function toBrightspacePath(url: string, baseUrl?: string): string | null 
   } catch {
     return null;
   }
-  if (parsed.origin !== origin || !parsed.pathname.startsWith("/d2l/")) return null;
+  if (parsed.origin !== origin || parsed.username || parsed.password) return null;
+  if (!parsed.pathname.startsWith("/d2l/")) return null;
   return `${parsed.pathname}${parsed.search}`;
 }
 

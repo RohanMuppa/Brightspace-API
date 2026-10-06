@@ -201,7 +201,7 @@ Scripts should branch on `code`; people should read `message`.
 |---|---|---|
 | `BRIGHTSPACE_AUTH_EXPIRED` | `BrightspaceAuthExpiredError` | The saved session is gone and the call was not allowed to open a browser (`onAuthExpired: "fail"`, the default). |
 | `BRIGHTSPACE_MFA_PENDING` | `BrightspaceMfaPendingError` | With `onAuthExpired: "login"`, a browser sign-in is waiting on an MFA approval or number match. `numberMatch` carries the digits when the tenant shows one. |
-| `BRIGHTSPACE_AUTH_FAILED` | `BrightspaceAuthFailedError` | A browser sign-in ran and did not produce a session. `kind` says why (`busy`, `cooldown`, `unsupported`, `secureStorage`, `transport`, `timeout`, `failed`). |
+| `BRIGHTSPACE_AUTH_FAILED` | `BrightspaceAuthFailedError` | A browser sign-in ran and did not produce a session. `kind` says why (`busy`, `cooldown`, `unsupported`, `secureStorage`, `transport`, `timeout`, `failed`, `inProgress`). `inProgress` means a sign-in is still starting after the 55-second per-call budget; it keeps running, and a retry joins it. |
 | `BRIGHTSPACE_NOT_FOUND` | `BrightspaceNotFoundError` | The course or item doesn't exist, you don't have access, or (for `getVideoTranscript`) no transcript is available. |
 | `BRIGHTSPACE_FORBIDDEN` | `BrightspaceForbiddenError` | Brightspace returned HTTP 403 for the request. |
 | `BRIGHTSPACE_RATE_LIMITED` | `BrightspaceRateLimitedError` | Brightspace rate-limited the request. |

@@ -316,7 +316,9 @@ export class D2LApiClient {
     } catch {
       return null;
     }
-    if (target.origin !== origin) return null;
+    // The cookie belongs to this Brightspace alone; a URL carrying userinfo
+    // is refused before the cookie is ever read.
+    if (target.origin !== origin || target.username || target.password) return null;
 
     const token = await this.tokenManager.getToken();
     if (!token?.cookieHeader) return null;

@@ -15,6 +15,21 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Automatic re-authentication (`onAuthExpired: "login"`) now answers every caller within 55
+  seconds of that call starting, including while Chromium is still launching or silent SSO is
+  still waiting. Before, a slow sign-in could hold a call for up to 8 minutes. When the budget
+  runs out, the call fails with `BrightspaceAuthFailedError` (`kind: "inProgress"`) and the
+  sign-in keeps running in the background. Retrying right away joins it, so no second MFA
+  prompt is sent. Ported from
+  [RohanMuppa/brightspace-mcp-server#189](https://github.com/RohanMuppa/brightspace-mcp-server/pull/189).
+
+- `getVideoTranscript` no longer treats a URL that carries userinfo
+  (`https://user:pw@purdue.brightspace.com/d2l/...`) as a link into the configured Brightspace,
+  and `D2LApiClient.getPage()` refuses such a URL before it reads the session cookie. Only a
+  relative `/d2l/` link or an absolute URL on exactly the configured origin, with no userinfo, is
+  requested with the session. Ported from
+  [RohanMuppa/brightspace-mcp-server#190](https://github.com/RohanMuppa/brightspace-mcp-server/issues/190).
+
 - A 429 whose `Retry-After` asks for more than 30 seconds now fails at once with
   `BrightspaceRateLimitedError` instead of blocking the call for that long (an hour-long
   `Retry-After` used to stall a call for up to two hours across retries). Shorter waits are still
