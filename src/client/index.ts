@@ -81,7 +81,7 @@ export async function createBrightspaceClient(options: BrightspaceClientOptions 
 
   let onAuthExpired: (() => Promise<boolean>) | undefined;
   if (options.onAuthExpired === "login") {
-    const authRunner = new AuthRunner({ onProgress: options.onProgress });
+    const authRunner = new AuthRunner({ sessionDir: config.sessionDir, onProgress: options.onProgress });
     onAuthExpired = async () => {
       try {
         return await authRunner.run();

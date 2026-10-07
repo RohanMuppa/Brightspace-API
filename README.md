@@ -121,6 +121,14 @@ async function getCoursesRetrying() {
 }
 ```
 
+A background sign-in nobody is waiting on is stopped 45 seconds after the last call that polled it
+(or relayed its number from another process) was answered, without starting the MFA cooldown, so
+the next call starts a fresh sign-in with a fresh number. Several processes can share one session
+directory; a call whose sign-in finds another process's sign-in already holding the lock throws
+`BrightspaceMfaPendingError` with that sign-in's number instead of a bare "already in progress".
+While MFA is pending, make one Brightspace call at a time: a caller that holds parallel results
+until the whole batch finishes can keep the number from the user until it is too late.
+
 ## CLI
 
 Three executables ship in `node_modules/.bin`: `brightspace` (the read-only JSON CLI, described

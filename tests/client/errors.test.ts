@@ -39,6 +39,14 @@ describe("toPublicError", () => {
     if (numberMatch) expect(error.message).toContain(`enter ${numberMatch}`);
   });
 
+  // brightspace-mcp-server#201: a caller that runs calls in a parallel batch
+  // can hold the error carrying the number until the whole batch finishes, so
+  // the user never sees it in time.
+  it.each([undefined, "47"])("tells the caller not to batch Brightspace calls while MFA is pending (number: %s)", (numberMatch) => {
+    const error = toPublicError(new AuthProcessError("mfaPending", SECRET, numberMatch));
+    expect(error.message).toContain("Don't run other Brightspace calls in parallel");
+  });
+
   it("maps a non-mfaPending AuthProcessError to BrightspaceAuthFailedError", () => {
     const error = toPublicError(new AuthProcessError("busy", SECRET));
     expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
