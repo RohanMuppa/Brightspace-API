@@ -15,6 +15,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- With `onAuthExpired: "login"`, a background sign-in whose MFA number nobody saw (the error was
+  swallowed, the script exited, or the call sat in a parallel batch) no longer holds its browser
+  and the session's `.auth.lock` for the full 5-minute MFA window. It is stopped 45 seconds after
+  the last call that polled it was answered, without starting the MFA cooldown, so the next call
+  starts a fresh sign-in. Processes sharing one session directory now share the pending number too:
+  the lock owner writes it to `challenge.json` in the lock directory, and a sign-in in another
+  process that loses the lock race throws `BrightspaceMfaPendingError` with that number instead of
+  `BrightspaceAuthFailedError` (`kind: "busy"`); relaying it keeps the owner's sign-in alive. The
+  `BrightspaceMfaPendingError` message now also asks callers not to run Brightspace calls in
+  parallel until the sign-in completes. Ported from
+  [RohanMuppa/brightspace-mcp-server#201](https://github.com/RohanMuppa/brightspace-mcp-server/pull/201).
+
 - Automatic re-authentication (`onAuthExpired: "login"`) now answers every caller within 55
   seconds of that call starting, including while Chromium is still launching or silent SSO is
   still waiting. Before, a slow sign-in could hold a call for up to 8 minutes. When the budget

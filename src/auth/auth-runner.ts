@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { log } from "../utils/logger.js";
 import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
+import { authLockPath, challengeRelayedAt } from "./mfa-challenge.js";
 
 /**
  * Timeout for the auth process. It has to outlast the child's own MFA wait,
@@ -43,6 +44,27 @@ const MFA_POLL_MS = 45000;
  * child, so no second MFA prompt is sent.
  */
 const CALL_BUDGET_MS = 55000;
+
+/**
+ * How long a background sign-in past its MFA challenge keeps running once
+ * nobody is waiting on it (brightspace-mcp-server#201). The error carrying the
+ * number can be swallowed, or the script that got it can exit or stop
+ * retrying; the child then kept its browser and the cross-process lock for the
+ * whole 5-minute MFA window, and every process sharing the session was stuck
+ * behind it. A user who did see the number retries, which polls for another
+ * MFA_POLL_MS, so the same span without any caller (in this process, or
+ * relaying the number from another one) means nobody is approving.
+ */
+const ABANDON_MS = MFA_POLL_MS;
+
+/**
+ * Milliseconds until a background sign-in counts as abandoned; zero or less
+ * means it already is. A caller still waiting keeps it alive outright;
+ * otherwise the clock runs from the latest moment anyone attended to it.
+ */
+function abandonDelayMs(waiting: number, attendedAt: number, now: number): number {
+  return waiting > 0 ? ABANDON_MS : attendedAt + ABANDON_MS - now;
+}
 
 /** How long to poll after a challenge seen elapsedMs into the call. */
 function pollWindowMs(elapsedMs: number): number {
@@ -88,6 +110,12 @@ export class AuthProcessError extends AuthError {
 export interface AuthRunnerOptions {
   timeoutMs?: number;
   onProgress?: (line: string) => void;
+  /**
+   * The account's session directory, shared with other processes. A caller
+   * in another process relaying this sign-in's number marks the challenge
+   * there, which keeps the sign-in from being abandoned.
+   */
+  sessionDir?: string;
 }
 
 /**
@@ -196,9 +224,14 @@ export class AuthRunner {
   private pendingChallenge: { numberMatch?: string } | null = null;
   /** Resolves on the next marker from the current child; null between children. */
   private challengeSignal: Promise<void> | null = null;
+  /** Callers inside run() right now. */
+  private waiting = 0;
+  /** When the last caller left run(). */
+  private lastAttendedAt = 0;
   private readonly scriptPath: string;
   private readonly timeoutMs: number;
   private readonly onProgress?: (line: string) => void;
+  private readonly sessionDir?: string;
 
   constructor(options: AuthRunnerOptions = {}) {
     // Resolve paths relative to this file's compiled location (build/auth/auth-runner.js)
@@ -206,6 +239,7 @@ export class AuthRunner {
     this.scriptPath = path.resolve(thisDir, "..", "auth-cli.js");
     this.timeoutMs = options.timeoutMs ?? AUTH_TIMEOUT_MS;
     this.onProgress = options.onProgress;
+    this.sessionDir = options.sessionDir;
   }
 
   /**
@@ -223,8 +257,14 @@ export class AuthRunner {
    * the next call to join.
    */
   async run(): Promise<boolean> {
-    const startedAt = Date.now();
-    return withinCallBudget(this.runOnce(startedAt), startedAt);
+    this.waiting += 1;
+    try {
+      const startedAt = Date.now();
+      return await withinCallBudget(this.runOnce(startedAt), startedAt);
+    } finally {
+      this.waiting -= 1;
+      this.lastAttendedAt = Date.now();
+    }
   }
 
   private runOnce(startedAt: number): Promise<boolean> {
@@ -332,6 +372,8 @@ export class AuthRunner {
       // against double cleanup.
       let childFinished = false;
       let numberMatch: string | undefined;
+      let challengeSeen = false;
+      let abandonTimer: ReturnType<typeof setTimeout> | undefined;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       const kill = (signal: NodeJS.Signals) => {
         try {
@@ -391,8 +433,29 @@ export class AuthRunner {
       // joinBackgroundChild. Idempotent on the "already known" question, but
       // a later number still overwrites a numberless pendingChallenge so a
       // fresh joiner sees it — see MFA_PENDING_MARKER's own comment.
+      // Once the child is past its challenge, stop it when nobody is waiting
+      // on it any more (see ABANDON_MS). SIGKILL rather than SIGTERM: a
+      // graceful stop runs the MFA loop's failure path, which records the
+      // cooldown, and the user never had a chance to answer. The dead owner
+      // leaves a stale lock the next sign-in reclaims.
+      const watchAttention = () => {
+        if (childFinished) return;
+        const relayedAt = this.sessionDir ? challengeRelayedAt(authLockPath(this.sessionDir)) ?? 0 : 0;
+        const delayMs = abandonDelayMs(this.waiting, Math.max(this.lastAttendedAt, relayedAt), Date.now());
+        if (delayMs > 0) {
+          abandonTimer = setTimeout(watchAttention, delayMs);
+          abandonTimer.unref?.();
+          return;
+        }
+        log("WARN", "Stopping a background sign-in nobody is waiting on; its MFA prompt went unanswered");
+        kill("SIGKILL");
+        finishChild(new AuthProcessError("timeout", `The sign-in was stopped because nobody approved its MFA prompt. Try again, or run ${AUTH_COMMAND}.`));
+      };
+
       const publishChallenge = (matched: string | undefined) => {
+        challengeSeen = true;
         const firstChallenge = this.pendingChallenge === null;
+        if (firstChallenge) watchAttention();
         if (firstChallenge || matched) {
           this.pendingChallenge = { numberMatch: matched ?? this.pendingChallenge?.numberMatch };
         }
@@ -410,6 +473,7 @@ export class AuthRunner {
         childFinished = true;
         clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        if (abandonTimer) clearTimeout(abandonTimer);
         process.off("exit", onExit);
         const answeredEarly = callerSettled;
         settleCaller(error);
@@ -473,6 +537,9 @@ export class AuthRunner {
             6: ["transport", "Brightspace authentication is temporarily unavailable because of a network or server failure. Your saved session was preserved. Try again later."],
             7: mfaPendingFailure(numberMatch),
           };
+          // Busy, but the owning sign-in's challenge came through: the caller
+          // was told what to approve, so answer with that, not "busy".
+          if (code === 2 && challengeSeen) failures[2] = mfaPendingFailure(numberMatch);
           const [kind, message] = failures[code ?? -1] ?? ["failed", `Authentication failed. Run ${AUTH_COMMAND} to try again.`];
           kill("SIGKILL");
           finishChild(new AuthProcessError(kind, message, kind === "mfaPending" ? numberMatch : undefined));

@@ -58,10 +58,19 @@ export class BrightspaceAuthExpiredError extends BrightspaceError {
  * the caller should retry at once rather than sleep or wait for the user to
  * confirm they approved.
  */
+/**
+ * A caller running calls in a parallel batch can hold the error carrying the
+ * number until the whole batch finishes, and the user never sees it in time
+ * (ported from brightspace-mcp-server#201). Ask for one call at a time.
+ */
+const MFA_SOLO_CALL =
+  "Don't run other Brightspace calls in parallel until the sign-in completes: a batched " +
+  "answer can reach the user too late to approve. Make one call at a time.";
+
 const MFA_RETRY_GUIDANCE =
   "Retry right away without waiting: the sign-in is finishing in the background, and each retry waits up to " +
   "45 seconds for the approval and returns the result as soon as the sign-in completes. Keep retrying until it " +
-  "succeeds or fails with a different error.";
+  `succeeds or fails with a different error. ${MFA_SOLO_CALL}`;
 
 export class BrightspaceMfaPendingError extends BrightspaceError {
   readonly numberMatch?: string;
