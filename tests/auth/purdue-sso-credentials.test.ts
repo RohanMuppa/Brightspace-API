@@ -193,6 +193,25 @@ describe("PurdueSSOFlow credential choreography ported from Brightspace Bar", ()
   });
 });
 
+describe("PurdueSSOFlow passwordless sign-in", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it("counts a username alone as enough to sign in", () => {
+    expect(new PurdueSSOFlow({ username: USERNAME, passwordless: true }).hasCredentials()).toBe(true);
+  });
+
+  it("still needs a username", () => {
+    expect(new PurdueSSOFlow({ passwordless: true }).hasCredentials()).toBe(false);
+  });
+
+  it("submits the username and stops instead of waiting for a password", async () => {
+    const form = makePage();
+    await enterCredentials(new PurdueSSOFlow({ username: USERNAME, passwordless: true }), form.page);
+    expect(form.actions).toEqual(["email", "next"]);
+  });
+});
+
 describe("Purdue campus routing ported from Brightspace Bar", () => {
   it("clicks Purdue's live campus control instead of assuming its destination", async () => {
     const click = vi.fn(async () => {});

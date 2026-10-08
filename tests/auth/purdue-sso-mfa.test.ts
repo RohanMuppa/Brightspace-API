@@ -16,7 +16,18 @@ interface PollState {
   d2l?: boolean;
   /** Entra's "You didn't enter the expected verification code" message. */
   codeError?: boolean;
+  /**
+   * Microsoft's passwordless phone sign-in view ("Approve sign in request"):
+   * its number in #idRemoteNGC_DisplaySign. Distinct from `number`, the
+   * second-factor page's digits.
+   */
+  approval?: string;
+  /** A password field on screen with no MFA challenge visible. */
+  password?: boolean;
 }
+
+const APPROVAL_SIGN_SELECTOR = "#idRemoteNGC_DisplaySign";
+const PASSWORD_SELECTOR = "input[type=password]";
 
 function captureWarnings() {
   const lines: string[] = [];
@@ -42,9 +53,14 @@ function makeMfaPage(states: PollState[]) {
       if (selector === "#idSpan_SAOTCC_Error_OTC") return Boolean(current().codeError);
       if (selector === "#idDiv_SAOTCAS_Title" || selector === "#idDiv_SAOTCC_Title") return Boolean(current().challenge || current().code);
       if (selector === "#KmsiCheckboxField" || selector === "#idSIButton9") return Boolean(current().kmsi);
+      if (selector === APPROVAL_SIGN_SELECTOR || selector === "#idDiv_RemoteNGC_PollingDescription") return current().approval !== undefined;
+      if (selector === PASSWORD_SELECTOR || selector === "input[name=passwd]") return Boolean(current().password);
       return false;
     },
-    textContent: async () => selector === SIGN_SELECTOR ? current().number ?? null : null,
+    textContent: async () =>
+      selector === SIGN_SELECTOR ? current().number ?? null
+        : selector === APPROVAL_SIGN_SELECTOR ? current().approval ?? null
+          : null,
     click: yes,
     fill,
     press,
@@ -314,5 +330,51 @@ describe("Purdue MFA loop ported from Brightspace Bar", () => {
   it("classifies a timeout with no challenge as unsupported instead of failed MFA", async () => {
     const { page } = makeMfaPage([{}]);
     await expect(handleMFA(page)).rejects.toBeInstanceOf(UnsupportedAuthenticationError);
+  });
+});
+
+describe("Purdue MFA loop with passwordless sign-in", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-08T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const passwordlessFlow = (onMfaChallenge?: (number: string | null) => void) => new PurdueSSOFlow({
+    baseUrl: BASE_URL,
+    username: "student@purdue.edu",
+    passwordless: true,
+    onMfaChallenge,
+  });
+
+  it("waits on Microsoft's approval view without entering credentials", async () => {
+    const { page, yes } = makeMfaPage([
+      { approval: "57" },
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+    ]);
+
+    await expect((passwordlessFlow() as any).handleMFA(page)).resolves.toBeUndefined();
+    expect(yes).not.toHaveBeenCalled();
+  });
+
+  it("announces the approval view's number to the caller", async () => {
+    const onMfaChallenge = vi.fn();
+    const { page } = makeMfaPage([
+      { approval: "57" },
+      { url: `${BASE_URL}/d2l/home`, cookie: true, d2l: true },
+    ]);
+
+    await (passwordlessFlow(onMfaChallenge) as any).handleMFA(page);
+
+    expect(onMfaChallenge).toHaveBeenCalledWith("57");
+  });
+
+  it("fails at once, naming the setting, when Microsoft switches to a password page", async () => {
+    const { page } = makeMfaPage([{ approval: "57" }, { password: true }]);
+
+    await expect((passwordlessFlow() as any).handleMFA(page)).rejects.toThrow("D2L_PASSWORDLESS");
   });
 });

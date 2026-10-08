@@ -125,6 +125,15 @@ describe("saved settings on a repeat run", () => {
     expect(saved.activeOnly).toBe(false);
   });
 
+  it("saves a passwordless answer without any password", () => {
+    const saved = buildConfigToSave(
+      { baseUrl: answers.baseUrl, password: "v1-plaintext" },
+      { ...answers, password: undefined, passwordless: true },
+    );
+    expect(saved.passwordless).toBe(true);
+    expect(saved.password).toBeUndefined();
+  });
+
   it("writes just the answers when there is nothing saved yet", () => {
     expect(buildConfigToSave(null, { ...answers, campus: "SUNY Poly" })).toEqual({
       ...answers,

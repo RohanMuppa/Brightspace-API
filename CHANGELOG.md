@@ -7,6 +7,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- An opt-in `passwordless` setting (`D2L_PASSWORDLESS` env var, or `passwordless` in
+  `config.json`; off by default) signs in with Microsoft Entra's passwordless phone approval
+  instead of a saved password. `setup` asks the question before the password step (default no),
+  and a yes skips the password prompt and deletes any password saved earlier for the same
+  account. `loadConfig` then reads no saved password, the default Entra flow (and the SUNY and
+  Western flows that wrap it) submits only the username and waits on Microsoft's approval view
+  as an MFA challenge, announcing its number like number match. Every sign-in then needs a phone
+  approval, so it suits interactive use, not unattended or scheduled jobs; if Microsoft asks for
+  a password anyway, sign-in fails at once with an error naming `D2L_PASSWORDLESS` instead of
+  waiting out the timeout. Ported from
+  [RohanMuppa/brightspace-mcp-server#206](https://github.com/RohanMuppa/brightspace-mcp-server/pull/206).
+
 - TU Delft NetID sign-in via SURFconext: `--tudelft` in the setup wizard selects
   `https://brightspace.tudelft.nl` and prompts for a NetID instead of an email address. The
   flow is headless username/password sign-in only, including automatic re-authentication when

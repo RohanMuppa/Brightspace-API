@@ -233,6 +233,7 @@ The client reads the same configuration as `brightspace-mcp-server`, resolved in
 | Username | `D2L_USERNAME` | `username` | — |
 | Session directory | `D2L_SESSION_DIR` | `sessionDir` | `~/.d2l-session` |
 | Headless sign-in | `D2L_HEADLESS` | `headless` | `true` |
+| Passwordless sign-in (Microsoft Entra only) | `D2L_PASSWORDLESS` | `passwordless` | `false` |
 | Token TTL (seconds) | `D2L_TOKEN_TTL` | `tokenTtl` | `3600` |
 | Only active courses | `D2L_ACTIVE_ONLY` | `activeOnly` | `true` |
 | Include only these course IDs | `D2L_INCLUDE_COURSES` (comma-separated) | `includeCourses` | — |
@@ -244,6 +245,13 @@ Manager, Linux Secret Service), never in `config.json` or an environment variabl
 can also skip config-file/env resolution entirely by passing a fully-built `AppConfig` as
 `createBrightspaceClient({ config })` — there is no `password` option; credentials never enter
 through the client's options.
+
+With passwordless sign-in on, no password is read or saved at all: the default Entra flow
+submits only the username and waits for your phone's approval, so every sign-in — including an
+automatic one after a session expires — needs that approval. This suits interactive use, not
+unattended or scheduled jobs, and only applies to Microsoft Entra schools; passwordless phone
+sign-in must already be registered in Microsoft Authenticator, or sign-in fails at once naming
+`D2L_PASSWORDLESS` instead of waiting out the usual timeout.
 
 ## Schools supported
 

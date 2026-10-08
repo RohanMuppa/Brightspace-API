@@ -25,6 +25,18 @@ const FIELD_POLL_MS = 250;
  * logged. Plain DOM text, no OCR.
  */
 const NUMBER_MATCH_SELECTOR = "#idRichContext_DisplaySign";
+
+/**
+ * Microsoft's passwordless phone sign-in view ("Approve sign in request"),
+ * which the tenant shows instead of a password page once the account has
+ * registered passwordless sign-in in Authenticator. The number shown there is
+ * typed into Authenticator like number match.
+ */
+const PASSWORDLESS_NUMBER_SELECTOR = "#idRemoteNGC_DisplaySign";
+const PASSWORDLESS_APPROVAL_SELECTORS = [
+  PASSWORDLESS_NUMBER_SELECTOR,
+  "#idDiv_RemoteNGC_PollingDescription",
+];
 const MFA_CODE_SELECTORS = ["#idTxtBx_SAOTCC_OTC", 'input[name="otc"]'];
 const MFA_CODE_SUBMIT_SELECTORS = ["#idSubmit_SAOTCC_Continue", "#idSIButton9"];
 /**
@@ -52,6 +64,8 @@ interface PurdueSSOConfig {
   password?: string;
   baseUrl?: string;
   headless?: boolean;
+  /** Sign in with the username and Microsoft's phone approval alone. Opt-in: D2L_PASSWORDLESS=true. */
+  passwordless?: boolean;
   requestMfaCode?: RequestMfaCode;
   /**
    * Fired once per login as soon as an MFA challenge is visible: with the
@@ -98,7 +112,7 @@ export class PurdueSSOFlow {
    * Returns true if credentials are available for automated SSO login.
    */
   hasCredentials(): boolean {
-    return Boolean(this.config.username && this.config.password);
+    return Boolean(this.config.username && (this.config.password || this.config.passwordless));
   }
 
   async prepareLogin(page: Page): Promise<void> {
@@ -169,7 +183,7 @@ export class PurdueSSOFlow {
 
   private async enterCredentials(page: Page): Promise<void> {
     if (!this.config.username) throw new BrowserAuthError("Username is required for SSO login", "credentials");
-    if (!this.config.password) throw new BrowserAuthError("Password is required for SSO login", "credentials");
+    if (!this.config.password && !this.config.passwordless) throw new BrowserAuthError("Password is required for SSO login", "credentials");
 
     log("INFO", "Entering credentials");
     // A submitted account hint only counts once Microsoft has actually left the
@@ -190,6 +204,9 @@ export class PurdueSSOFlow {
         throw new UnsupportedAuthenticationError("The Microsoft email submit button did not appear. Automatic sign-in cannot continue.");
       }
     }
+    // Passwordless: Microsoft answers the username with its approval view,
+    // which handleMFA waits on like any other phone approval.
+    if (!this.config.password) return;
     if (!await this.fillWhenReady(page, PASSWORD_SELECTORS, this.config.password)) {
       throw new UnsupportedAuthenticationError("The Microsoft password field did not appear. Automatic sign-in cannot continue.");
     }
@@ -237,7 +254,21 @@ export class PurdueSSOFlow {
       "#idDiv_SAOTCAS_Title",
       "#idDiv_SAOTCC_Title",
       "#KmsiCheckboxField",
+      ...PASSWORDLESS_APPROVAL_SELECTORS,
     ]);
+  }
+
+  /**
+   * Microsoft asked for a password, but passwordless sign-in left none saved:
+   * a tenant can still ask for one (an unregistered method, a policy change),
+   * and waiting out the 5-minute MFA timeout on a field nothing can fill
+   * would only confuse the real cause.
+   */
+  private requirePasswordlessApproval(): never {
+    throw new UnsupportedAuthenticationError(
+      "Microsoft asked for a password, but passwordless sign-in is on (D2L_PASSWORDLESS, or passwordless in config.json), so none is saved. " +
+      "Register passwordless phone sign-in in Microsoft Authenticator, or turn passwordless off and save a password with setup.",
+    );
   }
 
   /** Brightspace Bar's bounded number/auth/KMSI polling loop. */
@@ -263,7 +294,12 @@ export class PurdueSSOFlow {
         const number = await this.readNumberMatch(page);
         const challengeVisible = number !== null ||
           await page.locator("#idDiv_SAOTCAS_Title").first().isVisible().catch(() => false) ||
-          await page.locator("#idDiv_SAOTCC_Title").first().isVisible().catch(() => false);
+          await page.locator("#idDiv_SAOTCC_Title").first().isVisible().catch(() => false) ||
+          await this.anyVisible(page, PASSWORDLESS_APPROVAL_SELECTORS);
+        // With no password saved, a password page can only end in a timeout.
+        if (this.config.passwordless && !this.config.password && !challengeVisible && await this.anyVisible(page, PASSWORD_SELECTORS)) {
+          this.requirePasswordlessApproval();
+        }
         if (challengeVisible && !challenged) {
           challenged = true;
           log("WARN", "Waiting up to 5 minutes for Microsoft MFA approval on your device.");
@@ -401,13 +437,16 @@ export class PurdueSSOFlow {
 
   /** The digits on screen, or null when Entra is not showing any. */
   private async readNumberMatch(page: Page): Promise<string | null> {
-    const sign = page.locator(NUMBER_MATCH_SELECTOR).first();
-    // isVisible answers immediately rather than waiting out a timeout, so the
-    // runs that never show a number keep the poll on its two-second rhythm.
-    if (!(await sign.isVisible().catch(() => false))) return null;
-    const text = await sign.textContent().catch(() => null);
-    const number = text?.trim();
-    return number && /^\d{1,3}$/.test(number) ? number : null;
+    for (const selector of [NUMBER_MATCH_SELECTOR, PASSWORDLESS_NUMBER_SELECTOR]) {
+      const sign = page.locator(selector).first();
+      // isVisible answers immediately rather than waiting out a timeout, so the
+      // runs that never show a number keep the poll on its two-second rhythm.
+      if (!(await sign.isVisible().catch(() => false))) continue;
+      const text = await sign.textContent().catch(() => null);
+      const number = text?.trim();
+      return number && /^\d{1,3}$/.test(number) ? number : null;
+    }
+    return null;
   }
 
 }

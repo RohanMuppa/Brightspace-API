@@ -28,6 +28,10 @@ const SILENT_SSO = {
   emailFields: ["input[type=email]", "input[name=loginfmt]"],
   credentialFields: ['input#username', 'input#userName', 'input[type="password"]'],
   mfaChallenges: ["#idRichContext_DisplaySign", "#idDiv_SAOTCAS_Title", "#idDiv_SAOTCC_Title"],
+  // Microsoft's passwordless phone-approval view (purdue-sso.ts
+  // PASSWORDLESS_APPROVAL_SELECTORS), checked only when passwordless sign-in
+  // is configured, so an unrelated tenant never has its behavior changed.
+  passwordlessApproval: ["#idRemoteNGC_DisplaySign", "#idDiv_RemoteNGC_PollingDescription"],
   campusSaml: 'a[href*="/d2l/lp/auth/saml/initiate-login"]',
   kmsiCheckbox: "#KmsiCheckboxField",
   kmsiTitle: "Stay signed in?",
@@ -428,9 +432,15 @@ export class BrowserAuth {
       await this.isAnyOnScreen(page, SILENT_SSO.credentialFields);
   }
 
-  /** One definition of the MFA pages the shared authentication loop supports. */
+  /**
+   * One definition of the MFA pages the shared authentication loop supports.
+   * With passwordless sign-in on, Microsoft's approval view is the challenge
+   * itself, so it counts here too instead of being mistaken for a stalled page.
+   */
   private async hasMfaChallenge(page: Page): Promise<boolean> {
-    return isDuoPrompt(page) || await this.isAnyOnScreen(page, SILENT_SSO.mfaChallenges);
+    if (isDuoPrompt(page) || await this.isAnyOnScreen(page, SILENT_SSO.mfaChallenges)) return true;
+    if (!this.config.passwordless) return false;
+    return await this.isAnyOnScreen(page, SILENT_SSO.passwordlessApproval);
   }
 
   /**

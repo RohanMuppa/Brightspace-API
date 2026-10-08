@@ -47,6 +47,8 @@ export interface AppConfig {
   legacyBrowserStateMigrated?: boolean;
   tokenTtl: number; // seconds
   headless: boolean;
+  /** Sign in with Microsoft Entra's passwordless phone approval and no saved password. Opt-in via D2L_PASSWORDLESS; off by default. */
+  passwordless?: boolean;
   username?: string;
   password?: string;
   /** Campus within a shared multi-campus Brightspace instance. */

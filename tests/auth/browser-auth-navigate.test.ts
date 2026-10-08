@@ -21,6 +21,7 @@ const SAOTCC_SELECTOR = "#idDiv_SAOTCC_Title";
 const CAMPUS_SELECTOR = 'a[href*="/d2l/lp/auth/saml/initiate-login"]';
 const KMSI_CHECKBOX = "#KmsiCheckboxField";
 const KMSI_SUBMIT = "#idSIButton9";
+const APPROVAL_SIGN = "#idRemoteNGC_DisplaySign";
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -259,6 +260,27 @@ describe("BrowserAuth.navigateAndLogin", () => {
 
     await expect(navigate(page)).resolves.toBe(false);
     expect(ssoFlow.login).toHaveBeenCalledOnce();
+  });
+
+  it("treats the passwordless approval view as an MFA challenge when passwordless sign-in is on", async () => {
+    withConfig({ password: undefined, passwordless: true });
+    const { page } = makePage({
+      url: "https://login.microsoftonline.com/common/SAS/BeginAuth",
+      visible: [APPROVAL_SIGN],
+    });
+
+    await expect(navigate(page)).resolves.toBe(false);
+    expect(ssoFlow.login).toHaveBeenCalledOnce();
+  });
+
+  it("ignores the passwordless approval markers when passwordless sign-in is off", async () => {
+    const { page } = makePage({
+      url: "https://login.microsoftonline.com/common/SAS/BeginAuth",
+      visible: [APPROVAL_SIGN],
+    });
+
+    await expect(navigate(page)).rejects.toBeInstanceOf(BrowserAuthTransportError);
+    expect(ssoFlow.login).not.toHaveBeenCalled();
   });
 
   it("keeps a configured visible browser open for manual sign-in", async () => {
