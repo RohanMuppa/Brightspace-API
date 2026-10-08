@@ -95,6 +95,30 @@ describe("getUpcomingDueDates", () => {
     });
   });
 
+  it("reads quizzes past the first page of the quiz list (issue #24)", async () => {
+    const quiz = (id: number, days: number) => ({
+      QuizId: id,
+      Name: `Quiz ${id}`,
+      StartDate: null,
+      EndDate: null,
+      DueDate: daysFromNow(days),
+      IsActive: true,
+    });
+    const { ctx, requested } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/quizzes/") && path.includes("bookmark=p2")) {
+        return { Objects: [quiz(2, 2)], Next: null };
+      }
+      if (path.includes("/quizzes/")) return { Objects: [quiz(1, 1)], Next: "p2" };
+      return { Objects: [] };
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+
+    expect(items.map((item) => item.id)).toEqual([1, 2]);
+    expect(requested.filter((path) => path.includes("/quizzes/"))).toHaveLength(2);
+  });
+
   it("falls back to EndDate when a quiz has no DueDate", async () => {
     const quiz = {
       QuizId: 8,

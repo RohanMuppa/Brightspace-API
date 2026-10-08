@@ -6,7 +6,7 @@
 
 import type { z } from "zod";
 import { DEFAULT_CACHE_TTLS, type D2LApiClient } from "../api/index.js";
-import { fetchAllItems } from "../api/paginate.js";
+import { fetchAllItems, fetchAllObjects } from "../api/paginate.js";
 import { GetUpcomingDueDatesSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
@@ -171,7 +171,8 @@ async function fetchCourseDueItems(api: D2LApiClient, baseUrl: string, course: C
     api.get<{ Objects: DropboxFolder[] } | DropboxFolder[]>(api.le(course.id, "/dropbox/folders/"), {
       ttl: DEFAULT_CACHE_TTLS.assignments,
     }),
-    api.get<{ Objects: QuizReadData[] } | QuizReadData[]>(api.le(course.id, "/quizzes/"), {
+    // Quizzes are paged; a course with many of them spills past page one.
+    fetchAllObjects<QuizReadData>(api, api.le(course.id, "/quizzes/"), {
       ttl: DEFAULT_CACHE_TTLS.assignments,
     }),
     fetchDiscussionDueTopics(api, course.id),
@@ -202,7 +203,7 @@ async function fetchCourseDueItems(api: D2LApiClient, baseUrl: string, course: C
   }
 
   if (quizResult.status === "fulfilled") {
-    for (const quiz of unwrapList<QuizReadData>(quizResult.value)) {
+    for (const quiz of quizResult.value) {
       if (quiz.IsActive === false) continue;
 
       // Many instructors set only an End Date, which is the effective deadline.
