@@ -89,7 +89,10 @@ export async function createBrightspaceClient(options: BrightspaceClientOptions 
         // AuthRunner exposes the challenge only through this rejection today;
         // report it to the caller before it is rethrown and mapped to
         // BrightspaceMfaPendingError at the facade boundary.
-        if (error instanceof AuthProcessError && error.kind === "mfaPending") {
+        // A duplicate (brightspace-mcp-server#212, ported as #27) is the same
+        // challenge another call in this batch already reported; skip it so
+        // onMfaChallenge fires once per challenge, not once per call.
+        if (error instanceof AuthProcessError && error.kind === "mfaPending" && !error.duplicate) {
           options.onMfaChallenge?.(error.numberMatch ?? null);
         }
         throw error;

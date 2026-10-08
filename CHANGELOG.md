@@ -5,6 +5,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Fixed
+
+- With `onAuthExpired: "login"`, a parallel batch of calls against an expired session got the
+  same MFA number and the same full instructions back from every call. Now the first call in a
+  batch to report a challenge carries it in full (`BrightspaceMfaPendingError` with `numberMatch`
+  and the usual guidance); every other call reporting that same challenge gets a short
+  `BrightspaceMfaPendingError` saying a sign-in is already in progress, without the number. A call
+  arriving after the first report is treated as a retry and gets the number in full again, which
+  keeps [#201](https://github.com/RohanMuppa/brightspace-mcp-server/pull/201)'s guarantee that the
+  digits always reach someone. Ported from
+  [RohanMuppa/brightspace-mcp-server#213](https://github.com/RohanMuppa/brightspace-mcp-server/pull/213)
+  (fixes [#27](https://github.com/RohanMuppa/Brightspace-API/issues/27)).
+
 ### Added
 
 - An opt-in `passwordless` setting (`D2L_PASSWORDLESS` env var, or `passwordless` in
