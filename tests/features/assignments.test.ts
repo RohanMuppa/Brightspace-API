@@ -247,6 +247,29 @@ describe("fetchCourseAssignments quiz mapping", () => {
     expect(quiz.instructions).toContain("**chapter 3**");
   });
 
+  it("reads quizzes past the first page of the quiz list (issue #24)", async () => {
+    const requested: string[] = [];
+    const apiClient = {
+      le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
+      get: vi.fn(async (path: string) => {
+        requested.push(path);
+        if (path.endsWith("/quizzes/?bookmark=p2")) {
+          return { Objects: [{ QuizId: 2, Name: "Quiz 2", IsActive: true }], Next: null };
+        }
+        if (path.endsWith("/quizzes/")) {
+          return { Objects: [{ QuizId: 1, Name: "Quiz 1", IsActive: true }], Next: "p2" };
+        }
+        if (/\/quizzes\/\d+\/attempts\/$/.test(path)) return [];
+        throw notFound();
+      }),
+    };
+
+    const quizzes = quizzesOf(await fetchCourseAssignments(apiClient as any, COURSE_ID));
+
+    expect(quizzes.map((q) => q.id)).toEqual([1, 2]);
+    expect(requested).toContain(`/d2l/api/le/1.0/${COURSE_ID}/quizzes/?bookmark=p2`);
+  });
+
   it("maps SubmissionTimeLimit onto timeLimit", async () => {
     const { apiClient } = makeQuizClient(
       [
