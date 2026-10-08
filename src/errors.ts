@@ -72,17 +72,29 @@ const MFA_RETRY_GUIDANCE =
   "45 seconds for the approval and returns the result as soon as the sign-in completes. Keep retrying until it " +
   `succeeds or fails with a different error. ${MFA_SOLO_CALL}`;
 
+/**
+ * Another call in the same parallel batch already carried this exact
+ * challenge in full (brightspace-mcp-server#212, ported as #27). Repeating
+ * the number and the instructions in every response made a batch unreadable;
+ * one short line is enough for this call.
+ */
+const MFA_ALREADY_REPORTED =
+  "Brightspace sign-in is already in progress; another call in this batch has the number to approve. " +
+  "Retry this call once the sign-in completes.";
+
 export class BrightspaceMfaPendingError extends BrightspaceError {
   readonly numberMatch?: string;
-  constructor(numberMatch?: string) {
+  constructor(numberMatch?: string, duplicate = false) {
     super(
       "BRIGHTSPACE_MFA_PENDING",
-      numberMatch
-        ? `Open Microsoft Authenticator and enter ${numberMatch} within 5 minutes. ${MFA_RETRY_GUIDANCE}`
-        : `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
+      duplicate
+        ? MFA_ALREADY_REPORTED
+        : numberMatch
+          ? `Open Microsoft Authenticator and enter ${numberMatch} within 5 minutes. ${MFA_RETRY_GUIDANCE}`
+          : `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
     );
     this.name = "BrightspaceMfaPendingError";
-    this.numberMatch = numberMatch;
+    this.numberMatch = duplicate ? undefined : numberMatch;
   }
 }
 
@@ -202,7 +214,7 @@ export function toPublicError(error: unknown): BrightspaceError {
   if (error instanceof BrightspaceError) return error;
 
   if (error instanceof AuthProcessError) {
-    if (error.kind === "mfaPending") return new BrightspaceMfaPendingError(error.numberMatch);
+    if (error.kind === "mfaPending") return new BrightspaceMfaPendingError(error.numberMatch, error.duplicate);
     return new BrightspaceAuthFailedError(error.kind, AUTH_FAILURE_GUIDANCE[error.kind]);
   }
 

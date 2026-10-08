@@ -58,6 +58,15 @@ const CALL_BUDGET_MS = 55000;
 const ABANDON_MS = MFA_POLL_MS;
 
 /**
+ * Calls arriving within this long of a batch's first call count as that batch
+ * (brightspace-mcp-server#212, ported here as #27). A caller running tool
+ * calls in parallel sends them within milliseconds; a retry takes a whole
+ * round trip and each call is held up to CALL_BUDGET_MS anyway, so a retry
+ * always lands in a fresh batch and gets the number again.
+ */
+const WAVE_MS = 5000;
+
+/**
  * Milliseconds until a background sign-in counts as abandoned; zero or less
  * means it already is. A caller still waiting keeps it alive outright;
  * otherwise the clock runs from the latest moment anyone attended to it.
@@ -101,6 +110,13 @@ export class AuthProcessError extends AuthError {
      * it was scraped from the page, so it is safe to surface verbatim.
      */
     public readonly numberMatch?: string,
+    /**
+     * Another call in the same parallel batch already carried this exact
+     * challenge to the caller (brightspace-mcp-server#212, ported as #27), so
+     * this one should be reported briefly instead of repeating the number and
+     * the instructions. See dedupeChallenge below.
+     */
+    public readonly duplicate: boolean = false,
   ) {
     super(message);
     this.name = "AuthProcessError";
@@ -184,6 +200,37 @@ function forwardLines(
 }
 
 /**
+ * The first call in a batch to report a challenge carries it in full; every
+ * later call reporting the SAME challenge is marked as a duplicate instead
+ * (brightspace-mcp-server#212, ported as #27).
+ *
+ * Only calls that joined BEFORE the first report are siblings; joinWave opens
+ * a fresh batch for anything after it (see the comment in the body).
+ *
+ * First-reporter-wins, decided synchronously, rather than "wait for the
+ * owner": a caller holding a progress token keeps polling up to 45 s after
+ * the challenge, and making the others wait on it would hold them that long.
+ * A refreshed number is a different challenge and is reported in full again,
+ * so the digits always reach at least one response.
+ */
+interface Wave { openedAt: number; delivered: Set<string>; closed: boolean }
+
+function dedupeChallenge(error: unknown, wave: Wave): unknown {
+  if (!(error instanceof AuthProcessError) || error.kind !== "mfaPending" || error.duplicate) return error;
+  const key = error.numberMatch ?? "";
+  if (!wave.delivered.has(key)) {
+    wave.delivered.add(key);
+    // Once a challenge has gone back to the caller, the batch is over: every
+    // call already in it is a sibling, but a call arriving from now on is a
+    // RETRY -- quite possibly because the caller swallowed this very answer --
+    // and must get the digits in full. This is what keeps #201's guarantee.
+    wave.closed = true;
+    return error;
+  }
+  return new AuthProcessError(error.kind, error.message, error.numberMatch, true);
+}
+
+/**
  * Launches the brightspace-auth CLI as a child process to
  * re-authenticate when the current session has expired.
  *
@@ -228,6 +275,13 @@ export class AuthRunner {
   private waiting = 0;
   /** When the last caller left run(). */
   private lastAttendedAt = 0;
+  /**
+   * The current parallel batch and the challenges already handed to one of
+   * its calls (brightspace-mcp-server#212, ported as #27). The sign-in itself
+   * is shared through inFlight and childDone; this only stops every call in
+   * the batch repeating the number.
+   */
+  private wave: Wave | null = null;
   private readonly scriptPath: string;
   private readonly timeoutMs: number;
   private readonly onProgress?: (line: string) => void;
@@ -257,14 +311,26 @@ export class AuthRunner {
    * the next call to join.
    */
   async run(): Promise<boolean> {
+    // Synchronous, before any await: calls in one tick cannot split a batch.
+    const wave = this.joinWave();
     this.waiting += 1;
     try {
       const startedAt = Date.now();
       return await withinCallBudget(this.runOnce(startedAt), startedAt);
+    } catch (error) {
+      throw dedupeChallenge(error, wave);
     } finally {
       this.waiting -= 1;
       this.lastAttendedAt = Date.now();
     }
+  }
+
+  private joinWave(): Wave {
+    const now = Date.now();
+    if (!this.wave || this.wave.closed || now - this.wave.openedAt > WAVE_MS) {
+      this.wave = { openedAt: now, delivered: new Set(), closed: false };
+    }
+    return this.wave;
   }
 
   private runOnce(startedAt: number): Promise<boolean> {
@@ -421,6 +487,7 @@ export class AuthRunner {
           this.childDone = null;
           this.pendingChallenge = null;
           this.challengeSignal = null;
+          this.wave = null;
         }
       });
       trackedCompletion.catch(() => { /* see comment above */ });
