@@ -65,13 +65,20 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     ?? store?.activeOnly
     ?? true;
 
+  // Opt-in: sign in with Microsoft's passwordless phone approval, so no
+  // password is read or saved. Every sign-in then needs the phone, which is
+  // why it is off unless the user chose it in setup or set D2L_PASSWORDLESS.
+  const passwordless = envBoolean(process.env.D2L_PASSWORDLESS, "D2L_PASSWORDLESS")
+    ?? store?.passwordless
+    ?? false;
+
   const configuredUrl = new URL(process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com");
   if (configuredUrl.protocol !== "https:" || configuredUrl.username || configuredUrl.password) {
     throw new Error("The Brightspace URL must be an HTTPS school URL without embedded credentials.");
   }
   const baseUrl = configuredUrl.origin;
   const username = process.env.D2L_USERNAME || store?.username;
-  const password = await resolveStoredPassword(baseUrl, username, store, options.tolerateCredentialStore === true);
+  const password = passwordless ? undefined : await resolveStoredPassword(baseUrl, username, store, options.tolerateCredentialStore === true);
   // A new account must never inherit another account's cookies, even at the same school.
   const sessionDir = accountSessionDirectory(sessionRoot, baseUrl, username);
   const legacyMigration = sessionDir !== sessionRoot ? await migrateLegacyState(sessionRoot) : undefined;
@@ -83,6 +90,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     legacyBrowserStateMigrated: legacyMigration?.browserState === "encrypted",
     tokenTtl,
     headless,
+    passwordless,
     username,
     password,
     campus: process.env.D2L_CAMPUS || store?.campus,

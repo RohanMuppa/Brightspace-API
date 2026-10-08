@@ -19,6 +19,11 @@ export interface ConfigStoreData {
   sessionDir?: string;
   tokenTtl?: number;
   headless?: boolean;
+  /**
+   * Sign in with Microsoft Entra's passwordless phone approval, so no
+   * password is saved. Asked by setup, off by default; D2L_PASSWORDLESS overrides.
+   */
+  passwordless?: boolean;
   includeCourses?: number[];
   excludeCourses?: number[];
   activeOnly?: boolean;

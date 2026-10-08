@@ -1,4 +1,4 @@
-import { getStoredPassword, setStoredPassword, NativeCredentialStoreError } from "../auth/credential-store.js";
+import { deleteStoredPassword, getStoredPassword, setStoredPassword, NativeCredentialStoreError } from "../auth/credential-store.js";
 import { log } from "./logger.js";
 import * as path from "node:path";
 import { acquireProcessLock } from "../auth/auth-lock.js";
@@ -35,6 +35,9 @@ async function saveSecureConfigUnlocked(config: ConfigStoreData): Promise<void> 
     if (await getStoredPassword(config.baseUrl, config.username) !== password) {
       throw new Error("Could not verify the password in the native credential store. Configuration was preserved.");
     }
+  }
+  if (publicConfig.passwordless && config.baseUrl && config.username) {
+    await deleteStoredPassword(config.baseUrl, config.username);
   }
   saveConfigStore(publicConfig);
 }
