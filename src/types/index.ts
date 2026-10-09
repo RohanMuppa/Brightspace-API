@@ -49,6 +49,8 @@ export interface AppConfig {
   headless: boolean;
   /** Sign in with Microsoft Entra's passwordless phone approval and no saved password. Opt-in via D2L_PASSWORDLESS; off by default. */
   passwordless?: boolean;
+  /** Tick Microsoft Entra's "Don't ask again" box so later sign-ins can skip the second factor. Opt-in via setup or D2L_REMEMBER_MFA; off by default. */
+  rememberMfa?: boolean;
   username?: string;
   password?: string;
   /** Campus within a shared multi-campus Brightspace instance. */

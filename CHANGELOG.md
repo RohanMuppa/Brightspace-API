@@ -20,6 +20,15 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- An opt-in `rememberMfa` setting (`D2L_REMEMBER_MFA` env var, or `rememberMfa` in `config.json`;
+  off by default) for remembering this device so later sign-ins can skip the second factor.
+  `setup` now asks "Remember this device so later sign-ins can skip the second factor? Not for
+  shared computers." (default no) after the MFA step, and `loadConfig` resolves it the same way
+  as every other setting: env var, then `config.json`, then `false`. Left unanswered on a repeat
+  run, the saved choice for the same school is kept, and dropped when the school changes. Ported
+  from [RohanMuppa/brightspace-mcp-server#179](https://github.com/RohanMuppa/brightspace-mcp-server/pull/179)
+  (fixes [#12](https://github.com/RohanMuppa/Brightspace-API/issues/12)).
+
 - An opt-in `passwordless` setting (`D2L_PASSWORDLESS` env var, or `passwordless` in
   `config.json`; off by default) signs in with Microsoft Entra's passwordless phone approval
   instead of a saved password. `setup` asks the question before the password step (default no),
