@@ -146,6 +146,21 @@ describe("resolved authentication configuration", () => {
     expect(fake.password).not.toHaveBeenCalled();
   });
 
+  it("keeps remember-MFA off unless it is opted into", async () => {
+    expect((await loadConfig()).rememberMfa).toBe(false);
+  });
+
+  it("honours rememberMfa saved by setup in config.json", async () => {
+    fake.store = { rememberMfa: true };
+    expect((await loadConfig()).rememberMfa).toBe(true);
+  });
+
+  it("lets D2L_REMEMBER_MFA=false override rememberMfa in config.json", async () => {
+    vi.stubEnv("D2L_REMEMBER_MFA", "false");
+    fake.store = { rememberMfa: true };
+    expect((await loadConfig()).rememberMfa).toBe(false);
+  });
+
   it("falls back to the default when both sources are invalid", async () => {
     vi.stubEnv("D2L_TOKEN_TTL", "abc");
     fake.store = { tokenTtl: -1 };

@@ -204,6 +204,8 @@ export interface WizardAnswers {
   password?: string;
   headless: boolean;
   passwordless?: boolean;
+  /** Left undefined, the saved choice for the same school is kept. */
+  rememberMfa?: boolean;
   campus?: string;
 }
 
@@ -256,6 +258,7 @@ export function buildConfigToSave(
     headless: answers.headless,
   };
   if (answers.passwordless !== undefined) config.passwordless = answers.passwordless;
+  if (answers.rememberMfa !== undefined) config.rememberMfa = answers.rememberMfa;
   if (answers.campus) config.campus = answers.campus;
   return config;
 }
@@ -440,13 +443,37 @@ async function main(): Promise<void> {
     : "  A browser window will open when authentication is needed."));
   console.log("");
 
-  // ── Step 6: Save config ──────────────────────────────────────────
+  // ── Step 6: Remember this device for MFA ──────────────────────────
+  // Opt-in only: a shared computer must never skip MFA unless asked to.
+  let savedRememberMfa: boolean | undefined;
+  try {
+    savedRememberMfa = configStoreExists() ? loadConfigStore().rememberMfa : undefined;
+  } catch {
+    // An invalid old config is replaced by the setup values below.
+  }
+  const defaultRememberMfa = savedRememberMfa === true ? "yes" : "no";
+  let rememberMfaAnswer = "";
+  while (!/^(y(es)?|no?)$/i.test(rememberMfaAnswer)) {
+    rememberMfaAnswer = await ask(
+      rl2,
+      `  Remember this device so later sign-ins can skip the second factor? Not for shared computers. (yes/no) [${defaultRememberMfa}]: `,
+    ) || defaultRememberMfa;
+    if (!/^(y(es)?|no?)$/i.test(rememberMfaAnswer)) console.log(yellow("  Please enter yes or no."));
+  }
+  const rememberMfa = /^y/i.test(rememberMfaAnswer);
+  console.log(dim(rememberMfa
+    ? "  Later sign-ins will ask Microsoft not to repeat the second factor on this device."
+    : "  Every sign-in will ask for the second factor."));
+  console.log("");
+
+  // ── Step 7: Save config ──────────────────────────────────────────
   const config = buildConfigToSave(readExistingConfig(), {
     baseUrl,
     username,
     password,
     headless,
     passwordless,
+    rememberMfa,
     campus: campus || undefined,
   });
 
@@ -457,7 +484,7 @@ async function main(): Promise<void> {
   console.log(green("  Config saved to: " + getConfigStorePath()));
   console.log("");
 
-  // ── Step 7: Authenticate now? ────────────────────────────────────
+  // ── Step 8: Authenticate now? ────────────────────────────────────
   const authNow = await ask(rl2, "Would you like to authenticate now? (yes/no): ");
   rl2.close();
   if (/^y(es)?$/i.test(authNow)) {

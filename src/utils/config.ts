@@ -72,6 +72,13 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     ?? store?.passwordless
     ?? false;
 
+  // Opt-in: ask Microsoft to skip the second factor for its "Don't ask again"
+  // window. Off unless the user said yes in setup or set D2L_REMEMBER_MFA=true,
+  // so a shared machine never remembers MFA without the user choosing it.
+  const rememberMfa = envBoolean(process.env.D2L_REMEMBER_MFA, "D2L_REMEMBER_MFA")
+    ?? store?.rememberMfa
+    ?? false;
+
   const configuredUrl = new URL(process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com");
   if (configuredUrl.protocol !== "https:" || configuredUrl.username || configuredUrl.password) {
     throw new Error("The Brightspace URL must be an HTTPS school URL without embedded credentials.");
@@ -91,6 +98,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     tokenTtl,
     headless,
     passwordless,
+    rememberMfa,
     username,
     password,
     campus: process.env.D2L_CAMPUS || store?.campus,

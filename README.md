@@ -234,6 +234,7 @@ The client reads the same configuration as `brightspace-mcp-server`, resolved in
 | Session directory | `D2L_SESSION_DIR` | `sessionDir` | `~/.d2l-session` |
 | Headless sign-in | `D2L_HEADLESS` | `headless` | `true` |
 | Passwordless sign-in (Microsoft Entra only) | `D2L_PASSWORDLESS` | `passwordless` | `false` |
+| Remember this device for MFA (Microsoft Entra only) | `D2L_REMEMBER_MFA` | `rememberMfa` | `false` |
 | Token TTL (seconds) | `D2L_TOKEN_TTL` | `tokenTtl` | `3600` |
 | Only active courses | `D2L_ACTIVE_ONLY` | `activeOnly` | `true` |
 | Include only these course IDs | `D2L_INCLUDE_COURSES` (comma-separated) | `includeCourses` | — |
