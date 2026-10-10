@@ -7,6 +7,8 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getDiscussions` `postCount` now counts only the posts it returns, excluding deleted posts (fixes [#31](https://github.com/RohanMuppa/Brightspace-API/issues/31)).
+
 - With `onAuthExpired: "login"`, a parallel batch of calls against an expired session got the
   same MFA number and the same full instructions back from every call. Now the first call in a
   batch to report a challenge carries it in full (`BrightspaceMfaPendingError` with `numberMatch`

@@ -232,6 +232,7 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
       }
     }
 
+    const formattedPosts = formatPosts(posts);
     topicsWithPosts.push({
       topicId: topic.TopicId,
       name: topic.Name,
@@ -240,8 +241,8 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
       isLocked: topic.IsLocked,
       mustPostToParticipate: topic.MustPostToParticipate,
       scoreOutOf: topic.ScoreOutOf,
-      postCount: posts.length,
-      posts: formatPosts(posts),
+      postCount: formattedPosts.length,
+      posts: formattedPosts,
     });
   }
 
@@ -268,7 +269,9 @@ async function getTopicPosts(api: D2LApiClient, courseId: number, forumId: numbe
   const postsPath = api.le(courseId, `/discussions/forums/${forumId}/topics/${topicId}/posts/`);
   const posts = await api.get<D2LPost[]>(postsPath, { ttl: DEFAULT_CACHE_TTLS.announcements });
 
-  log("INFO", `getDiscussions: Retrieved ${posts.length} posts for topic ${topicId} in forum ${forumId}`);
+  const formattedPosts = formatPosts(posts);
+
+  log("INFO", `getDiscussions: Retrieved ${formattedPosts.length} posts for topic ${topicId} in forum ${forumId}`);
 
   return {
     courseId,
@@ -282,8 +285,8 @@ async function getTopicPosts(api: D2LApiClient, courseId: number, forumId: numbe
       mustPostToParticipate: topic.MustPostToParticipate,
       scoreOutOf: topic.ScoreOutOf,
     },
-    postCount: posts.length,
-    posts: formatPosts(posts),
+    postCount: formattedPosts.length,
+    posts: formattedPosts,
   };
 }
 

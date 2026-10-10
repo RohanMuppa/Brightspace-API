@@ -178,7 +178,7 @@ describe("getDiscussions forum detail", () => {
           isLocked: false,
           mustPostToParticipate: false,
           scoreOutOf: null,
-          postCount: 3,
+          postCount: 2,
           posts: [
             {
               postId: 1,
@@ -255,6 +255,39 @@ describe("getDiscussions topic posts", () => {
         },
       ],
     });
+  });
+});
+
+describe("getDiscussions postCount excludes deleted posts", () => {
+  const rawPosts = () => [post(1), post(2, { IsDeleted: true }), post(3)];
+
+  it("counts only returned posts for a topic (courseId + forumId + topicId)", async () => {
+    const { ctx } = setup((path) => {
+      if (path === "/d2l/api/le/1.0/101/discussions/forums/1/topics/10") return topic(1, 10);
+      if (path.includes("/topics/10/posts/")) return rawPosts();
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1, topicId: 10 });
+
+    expect(result.posts).toHaveLength(2);
+    expect(result.postCount).toBe(2);
+    expect(result.postCount).toBe(result.posts.length);
+  });
+
+  it("counts only returned posts for each topic in a forum (courseId + forumId)", async () => {
+    const { ctx } = setup((path) => {
+      if (path === "/d2l/api/le/1.0/101/discussions/forums/1") return forum(1);
+      if (path.endsWith("/forums/1/topics/")) return [topic(1, 10)];
+      if (path.includes("/topics/10/posts/")) return rawPosts();
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 });
+
+    expect(result.topics[0].posts).toHaveLength(2);
+    expect(result.topics[0].postCount).toBe(2);
+    expect(result.topics[0].postCount).toBe(result.topics[0].posts.length);
   });
 });
 
