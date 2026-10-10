@@ -132,6 +132,118 @@ describe("AuthRunner", () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  // A child answering its own verification code (an authenticator enrollment
+  // is saved) reports AUTH_AUTOMATIC_PENDING instead of a challenge marker:
+  // there is nothing on anyone's phone to approve, so no caller may be told
+  // to go approve one.
+  it("settles run() early on the AUTH_AUTOMATIC_PENDING marker without killing or timing out the child", async () => {
+    const result = new AuthRunner().run();
+    const failure = expect(result).rejects.toMatchObject({ kind: "automaticPending", numberMatch: undefined });
+    child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+    await failure;
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("joins an automatic sign-in that later finishes successfully", async () => {
+    const runner = new AuthRunner();
+    const firstResult = runner.run();
+    const firstFailure = expect(firstResult).rejects.toMatchObject({ kind: "automaticPending" });
+    child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+    await firstFailure;
+
+    const second = runner.run();
+    child.emit("close", 0);
+
+    expect(await second).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-answers a joiner with automaticPending once the 45-second poll window lapses while the child still runs", async () => {
+    const runner = new AuthRunner();
+    const first = runner.run();
+    const firstFailure = expect(first).rejects.toMatchObject({ kind: "automaticPending" });
+    child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+    await firstFailure;
+
+    const second = runner.run();
+    const secondFailure = expect(second).rejects.toMatchObject({ kind: "automaticPending" });
+    await vi.advanceTimersByTimeAsync(45000);
+    await secondFailure;
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("upgrades automatic progress to a real challenge once the poll window lapses", async () => {
+    const runner = new AuthRunner();
+    const first = runner.run();
+    const firstFailure = expect(first).rejects.toMatchObject({ kind: "automaticPending" });
+    child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+    await firstFailure;
+
+    const second = runner.run();
+    const secondFailure = expect(second).rejects.toMatchObject({ kind: "mfaPending", numberMatch: "47" });
+    child.stdout.write("MFA_NUMBER:47\n");
+    await vi.advanceTimersByTimeAsync(45000);
+    await secondFailure;
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    child.emit("close", 0);
+  });
+
+  it("answers automaticPending, not busy, when another process is signing in automatically", async () => {
+    const result = new AuthRunner().run();
+    const failure = expect(result).rejects.toMatchObject({ kind: "automaticPending" });
+    child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+    await vi.advanceTimersByTimeAsync(0);
+
+    child.emit("close", 2);
+
+    await failure;
+  });
+
+  describe("an automatic sign-in nobody is waiting on", () => {
+    async function answerEarlyAutomatic(runner: AuthRunner) {
+      const failure = expect(runner.run()).rejects.toMatchObject({ kind: "automaticPending" });
+      child.stdout.write("AUTH_AUTOMATIC_PENDING\n");
+      await failure;
+    }
+
+    function childTreeStopped(): boolean {
+      return process.platform === "win32"
+        ? vi.mocked(execFileSync).mock.calls.some(([command]) => command === "taskkill")
+        : kill.mock.calls.some(([pid, signal]) => pid === -child.pid && signal === "SIGKILL");
+    }
+
+    // Nothing is waiting on it and nobody was asked to approve anything, but
+    // it still holds the cross-process sign-in lock every other process is
+    // queued behind, exactly like an unapproved mfaPending challenge.
+    it("is stopped 45 seconds after reporting progress when no caller came back", async () => {
+      const runner = new AuthRunner();
+      await answerEarlyAutomatic(runner);
+
+      await vi.advanceTimersByTimeAsync(45000);
+
+      expect(childTreeStopped()).toBe(true);
+    });
+
+    it("lets the next call start a fresh sign-in once it was stopped", async () => {
+      const runner = new AuthRunner();
+      await answerEarlyAutomatic(runner);
+      await vi.advanceTimersByTimeAsync(45000);
+
+      child = mockChild();
+      vi.mocked(spawn).mockReturnValue(child as never);
+      const retry = runner.run();
+      child.emit("close", 0);
+
+      expect(await retry).toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("joins the background child after an early MFA_NUMBER answer instead of spawning again", async () => {
     const first = new AuthRunner();
     const firstResult = first.run();

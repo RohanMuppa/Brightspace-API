@@ -9,13 +9,13 @@ import { readFileSync, accessSync } from "node:fs";
 import type { AppConfig, TokenData } from "../types/index.js";
 import { BrowserAuthError } from "../utils/errors.js";
 import { log } from "../utils/logger.js";
-import { createSSOFlow, UnsupportedAuthenticationError, MfaApprovalError } from "./sso-flow.js";
+import { createSSOFlow, UnsupportedAuthenticationError, MfaApprovalError, AutomaticCodeAuthenticationError } from "./sso-flow.js";
 import type { SSOFlow } from "./sso-flow.js";
 import type { RequestMfaCode, OnMfaChallenge } from "./sso-flow.js";
 import { isDuoPrompt } from "./duo-mfa.js";
 import { BrowserStateStore } from "./browser-state-store.js";
 import { acquireProcessLock, AuthenticationInProgressError } from "./auth-lock.js";
-import { authLockPath, publishChallenge, relayChallenge } from "./mfa-challenge.js";
+import { authLockPath, publishAutomaticProgress, publishChallenge, relayChallenge } from "./mfa-challenge.js";
 import { AuthCooldown } from "./auth-cooldown.js";
 import { mintAccessToken } from "./token-mint.js";
 import { isMissingBrowserError, PLAYWRIGHT_INSTALL_HINT } from "../utils/browser-install.js";
@@ -56,6 +56,12 @@ export interface BrowserAuthOptions {
   requestMfaCode?: RequestMfaCode;
   /** See PurdueSSOConfig.onMfaChallenge — fired early so a caller can answer without blocking on the full MFA wait. */
   onMfaChallenge?: OnMfaChallenge;
+  /**
+   * Fired once when a sign-in answering its own verification code has been
+   * running long enough to report. No approval was requested, so the caller
+   * must say "still signing in", never "check your phone".
+   */
+  onAutomaticPending?: () => void;
 }
 
 export class BrowserAuth {
@@ -71,12 +77,20 @@ export class BrowserAuth {
     this.config = config;
     const { onMfaChallenge } = options;
     this.lockPath = authLockPath(config.sessionDir);
+    const { onAutomaticPending } = options;
     this.ssoFlow = createSSOFlow(config, options.requestMfaCode, onMfaChallenge && ((number) => {
       // Other processes sharing this session cannot see our caller's error;
       // the lock directory is where they look instead.
       this.publishing = this.publishing.then(() => publishChallenge(this.lockPath, number)).catch(() => {});
       onMfaChallenge(number);
-    }));
+    }), () => {
+      // Published through the same lock-directory file as a number-match
+      // challenge, so a contender in another process relays "automatic
+      // sign-in in progress" rather than an approval nobody asked for — and
+      // the relay keeps this sign-in from being abandoned.
+      this.publishing = this.publishing.then(() => publishAutomaticProgress(this.lockPath)).catch(() => {});
+      try { onAutomaticPending?.(); } catch { /* Reporting must not interrupt authentication. */ }
+    });
     this.stateStore = new BrowserStateStore(config.sessionDir);
     this.cooldown = new AuthCooldown(config.sessionDir);
   }
@@ -336,7 +350,11 @@ export class BrowserAuth {
         throw new UnsupportedAuthenticationError("The identity provider could not complete automatic sign-in.");
       }
     } catch (error) {
-      if (error instanceof MfaApprovalError) await this.cooldown.recordMfaFailure();
+      // An automatic code sign-in that failed gets the same cooldown: retrying
+      // it in a tight loop would walk Entra's attempt limits down for nothing.
+      if (error instanceof MfaApprovalError || error instanceof AutomaticCodeAuthenticationError) {
+        await this.cooldown.recordMfaFailure();
+      }
       throw error;
     }
     if (!await this.hasLiveSession(page)) {

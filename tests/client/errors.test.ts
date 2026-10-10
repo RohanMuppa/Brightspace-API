@@ -47,6 +47,21 @@ describe("toPublicError", () => {
     expect(error.message).toContain("Don't run other Brightspace calls in parallel");
   });
 
+  it("maps an automaticPending AuthProcessError to BrightspaceAutomaticPendingError", () => {
+    const error = toPublicError(new AuthProcessError("automaticPending", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTOMATIC_PENDING");
+    expect(error.name).toBe("BrightspaceAutomaticPendingError");
+    expect(error.message).toContain("No phone approval is being requested");
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  it("shortens a duplicate automaticPending report instead of repeating it in every call", () => {
+    const error = toPublicError(new AuthProcessError("automaticPending", SECRET, undefined, true));
+    expect(error.code).toBe("BRIGHTSPACE_AUTOMATIC_PENDING");
+    expect(error.message).toMatch(/already in progress/i);
+    expect(error.message).not.toContain(SECRET);
+  });
+
   it("maps a non-mfaPending AuthProcessError to BrightspaceAuthFailedError", () => {
     const error = toPublicError(new AuthProcessError("busy", SECRET));
     expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");

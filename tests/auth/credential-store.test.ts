@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { assertNativeCredentialStoreAvailable, deleteStoredPassword, getSessionEncryptionKey, getStoredPassword, hasSessionEncryptionKey, setStoredPassword, NativeCredentialStoreError, nativeCredentialBackend } from "../../src/auth/credential-store.js";
+import { assertNativeCredentialStoreAvailable, deleteStoredPassword, getSessionEncryptionKey, getStoredPassword, getStoredTotpUri, hasSessionEncryptionKey, setStoredPassword, setStoredTotpUri, NativeCredentialStoreError, nativeCredentialBackend } from "../../src/auth/credential-store.js";
 import { MemoryCredentialBackend } from "./secure-store-fixtures.js";
 
 describe("Credential store", () => {
@@ -58,6 +58,25 @@ describe("Credential store", () => {
     const backend = new MemoryCredentialBackend();
     backend.setPassword = async () => {};
     await expect(setStoredPassword("https://school.example", "alice", "dummy-password", backend)).rejects.toBeInstanceOf(NativeCredentialStoreError);
+  });
+
+  it("keeps an authenticator enrollment separate from the password and from other accounts", async () => {
+    const backend = new MemoryCredentialBackend();
+    const uri = "otpauth://totp/Test?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    await setStoredTotpUri("https://school.example/", "alice", uri, backend);
+    expect(await getStoredTotpUri("https://school.example", "alice", backend)).toBe(uri);
+    // A seed must never come back where a password is expected, and the two
+    // are keyed identically, so one account's secrets live and die together.
+    expect(await getStoredPassword("https://school.example", "alice", backend)).toBeNull();
+    expect(await getStoredTotpUri("https://other.example", "alice", backend)).toBeNull();
+    expect(await getStoredTotpUri("https://school.example", "bob", backend)).toBeNull();
+  });
+
+  it("fails verification when the native store does not retain an enrollment", async () => {
+    const backend = new MemoryCredentialBackend();
+    backend.setPassword = async () => {};
+    await expect(setStoredTotpUri("https://school.example", "alice", "otpauth://totp/Test?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", backend))
+      .rejects.toBeInstanceOf(NativeCredentialStoreError);
   });
 
   it("requires a real Secret Service on Linux", async () => {

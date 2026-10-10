@@ -161,6 +161,30 @@ function passwordAccount(baseUrl: string, username: string): string {
   return `password:${createHash("sha256").update(identity).digest("hex")}`;
 }
 
+/**
+ * The authenticator enrollment's own account, derived exactly like
+ * passwordAccount (same origin + username) so one account's two secrets live
+ * or die together, under a separate `totp:` prefix so the seed can never be
+ * returned where a password is expected.
+ */
+function totpAccount(baseUrl: string, username: string): string {
+  const identity = JSON.stringify([new URL(baseUrl).origin, username]);
+  return `totp:${createHash("sha256").update(identity).digest("hex")}`;
+}
+
+/** The account's saved authenticator enrollment, or null when none was saved. */
+export async function getStoredTotpUri(baseUrl: string, username: string, backend: CredentialBackend = nativeCredentialBackend): Promise<string | null> {
+  return backend.getPassword(SERVICE, totpAccount(baseUrl, username));
+}
+
+export async function setStoredTotpUri(baseUrl: string, username: string, uri: string, backend: CredentialBackend = nativeCredentialBackend): Promise<void> {
+  const account = totpAccount(baseUrl, username);
+  await backend.setPassword(SERVICE, account, uri);
+  if (await backend.getPassword(SERVICE, account) !== uri) {
+    throw new NativeCredentialStoreError("The authenticator enrollment could not be verified in the native credential store. Existing configuration was preserved.");
+  }
+}
+
 export async function getStoredPassword(baseUrl: string, username: string, backend: CredentialBackend = nativeCredentialBackend): Promise<string | null> {
   return backend.getPassword(SERVICE, passwordAccount(baseUrl, username));
 }

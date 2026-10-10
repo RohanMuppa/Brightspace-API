@@ -56,6 +56,13 @@ export interface BrightspaceClientOptions {
   onAuthExpired?: "fail" | "login";
   /** Receives the number-match digits (or null for a plain push) the moment they appear. Only with "login". */
   onMfaChallenge?: (numberMatch: string | null) => void;
+  /**
+   * Fired once per sign-in when it has been running long enough to report
+   * that it is answering its own verification code from a saved
+   * authenticator enrollment. Only with "login". Distinct from
+   * onMfaChallenge: no phone approval was ever requested.
+   */
+  onAutomaticPending?: () => void;
   /** Progress lines from the sign-in child, for a script that wants to show them. */
   onProgress?: (line: string) => void;
   /** Logger threshold for this process; default "WARN" so a library caller's stderr stays quiet. */
@@ -94,6 +101,9 @@ export async function createBrightspaceClient(options: BrightspaceClientOptions 
         // onMfaChallenge fires once per challenge, not once per call.
         if (error instanceof AuthProcessError && error.kind === "mfaPending" && !error.duplicate) {
           options.onMfaChallenge?.(error.numberMatch ?? null);
+        }
+        if (error instanceof AuthProcessError && error.kind === "automaticPending" && !error.duplicate) {
+          options.onAutomaticPending?.();
         }
         throw error;
       }

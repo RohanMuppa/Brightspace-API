@@ -11,6 +11,8 @@ import dotenv from "dotenv";
 import type { AppConfig } from "../types/index.js";
 import { configStoreExists, loadConfigStore } from "./config-store.js";
 import { resolveStoredPassword } from "./secure-config.js";
+import { getStoredTotpUri } from "../auth/credential-store.js";
+import { normalizeTotpEnrollment } from "../auth/totp.js";
 import { migrateLegacyState } from "../auth/legacy-state.js";
 
 export interface LoadConfigOptions {
@@ -86,6 +88,19 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
   const baseUrl = configuredUrl.origin;
   const username = process.env.D2L_USERNAME || store?.username;
   const password = passwordless ? undefined : await resolveStoredPassword(baseUrl, username, store, options.tolerateCredentialStore === true);
+  // Opt-in: only an enrollment the user deliberately saved makes the Entra
+  // sign-in answer a verification-code challenge itself. With none, every MFA
+  // challenge is handled exactly as before. The keyring entry is per account;
+  // D2L_TOTP_SECRET exists for CI and containers, where there is no keyring,
+  // and is deliberately weaker (see .env.example) so it is never the default.
+  const envTotpSecret = process.env.D2L_TOTP_SECRET;
+  const totpUri = envTotpSecret
+    ? normalizeTotpEnrollment(envTotpSecret, username ?? "")
+    // A credential store that cannot be read means "no enrollment saved",
+    // which is the default anyway. It must never be a startup failure: this is
+    // an optional extra, unlike the password resolveStoredPassword above
+    // reports a locked or missing store for, loudly.
+    : username ? (await getStoredTotpUri(baseUrl, username).catch(() => null)) ?? undefined : undefined;
   // A new account must never inherit another account's cookies, even at the same school.
   const sessionDir = accountSessionDirectory(sessionRoot, baseUrl, username);
   const legacyMigration = sessionDir !== sessionRoot ? await migrateLegacyState(sessionRoot) : undefined;
@@ -101,6 +116,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     rememberMfa,
     username,
     password,
+    totpUri,
     campus: process.env.D2L_CAMPUS || store?.campus,
     courseFilter: {
       includeCourseIds,
