@@ -108,6 +108,21 @@ describe("BrightspaceClient facade", () => {
     expect(onMfaChallenge).toHaveBeenCalledWith("47");
   });
 
+  it("under 'login', maps an automaticPending AuthProcessError to BrightspaceAutomaticPendingError and calls onAutomaticPending", async () => {
+    authRunnerRun.mockRejectedValueOnce(new AuthProcessError("automaticPending", "Answering its own code"));
+    const onAutomaticPending = vi.fn();
+    const client = await createBrightspaceClient({ config: makeConfig(), onAuthExpired: "login", onAutomaticPending });
+    fakeApis[0].get.mockImplementationOnce(async () => {
+      await fakeApis[0].onAuthExpired!();
+      throw new Error("unreachable — onAuthExpired above always throws or resolves");
+    });
+
+    const error = await client.getMyCourses().catch((e) => e);
+
+    expect(error.code).toBe("BRIGHTSPACE_AUTOMATIC_PENDING");
+    expect(onAutomaticPending).toHaveBeenCalledOnce();
+  });
+
   it("maps a ZodError to BrightspaceInvalidArgumentError", async () => {
     const client = await createBrightspaceClient({ config: makeConfig() });
 

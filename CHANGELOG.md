@@ -22,6 +22,24 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- Opt-in automatic answering of Microsoft Entra verification-code MFA. `setup` optionally saves an
+  authenticator setup key or `otpauth://` link (hidden input, Enter to skip) in the native
+  credential store under a `totp:`-prefixed account, read back by `loadConfig` as `totpUri`
+  whenever a username is configured (`D2L_TOTP_SECRET` overrides it, for CI and containers with no
+  keychain). With `totpUri` set, the Entra MFA loop switches Microsoft to its "Use a verification
+  code" method (falling back to "sign in another way", each control clicked at most once per
+  login), verifies the account Microsoft is showing before typing anything, and submits an RFC
+  6238 code generated locally (`src/auth/totp.ts`) — waiting out a code's remaining lifetime
+  rather than submitting one with under five seconds left or resubmitting a rejected one. The gate
+  is the identity provider and the challenge on screen, never a school URL: it never engages off
+  `login.microsoftonline.com`, after a Duo challenge, or on Microsoft's passwordless approval view,
+  and gives up and falls back to the ordinary announce-and-approve path if Entra offers no way to
+  reach a code within 30 seconds. A new `automaticPending` failure kind (and
+  `BrightspaceAutomaticPendingError`) tells a caller "no phone approval is being requested" instead
+  of sending it looking for an approval that will never arrive. Ported from
+  [RohanMuppa/brightspace-mcp-server#207](https://github.com/RohanMuppa/brightspace-mcp-server/pull/207)
+  (fixes [#33](https://github.com/RohanMuppa/Brightspace-API/issues/33)).
+
 - An opt-in `rememberMfa` setting (`D2L_REMEMBER_MFA` env var, or `rememberMfa` in `config.json`;
   off by default) for remembering this device so later sign-ins can skip the second factor.
   `setup` now asks "Remember this device so later sign-ins can skip the second factor? Not for

@@ -12,7 +12,7 @@ import { MfaApprovalError } from "./auth/sso-flow.js";
 import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { retireLegacyProfile } from "./auth/legacy-profile.js";
 import { AuthenticationInProgressError } from "./auth/auth-lock.js";
-import { challengeMarker } from "./auth/mfa-challenge.js";
+import { AUTOMATIC_PENDING_MARKER, challengeMarker } from "./auth/mfa-challenge.js";
 import { AUTH_COMMAND, SETUP_COMMAND } from "./utils/commands.js";
 
 dotenv.config({ quiet: true });
@@ -54,7 +54,13 @@ async function main(): Promise<void> {
     const onMfaChallenge = automatic
       ? (number: string | null) => console.log(challengeMarker(number))
       : undefined;
-    await new BrowserAuth(config, { requestMfaCode: codePrompt, onMfaChallenge }).authenticate({
+    // No digits and nothing to approve: just "this sign-in is answering its
+    // own verification code", so the parent can say so instead of sending the
+    // user to their phone.
+    const onAutomaticPending = automatic
+      ? () => console.log(AUTOMATIC_PENDING_MARKER)
+      : undefined;
+    await new BrowserAuth(config, { requestMfaCode: codePrompt, onMfaChallenge, onAutomaticPending }).authenticate({
       automatic,
       onAuthenticated: async (token) => {
         await tokenManager.setToken(token);
@@ -78,7 +84,9 @@ async function main(): Promise<void> {
     // Another process's sign-in holds the lock and is showing a challenge:
     // pass it on, so this caller can tell its user what to approve.
     if (automatic && error instanceof AuthenticationInProgressError && error.challenge) {
-      console.log(challengeMarker(error.challenge.numberMatch));
+      console.log(error.challenge.kind === "automatic"
+        ? AUTOMATIC_PENDING_MARKER
+        : challengeMarker(error.challenge.numberMatch));
     }
     process.exitCode = error instanceof NativeCredentialStoreError ? 5
       : code === "AUTH_IN_PROGRESS" ? 2

@@ -1,4 +1,5 @@
-import { deleteStoredPassword, getStoredPassword, setStoredPassword, NativeCredentialStoreError } from "../auth/credential-store.js";
+import { deleteStoredPassword, getStoredPassword, getStoredTotpUri, setStoredPassword, setStoredTotpUri, NativeCredentialStoreError } from "../auth/credential-store.js";
+import { normalizeTotpEnrollment } from "../auth/totp.js";
 import { log } from "./logger.js";
 import * as path from "node:path";
 import { acquireProcessLock } from "../auth/auth-lock.js";
@@ -19,13 +20,19 @@ export async function saveSecureConfig(config: ConfigStoreData): Promise<void> {
 }
 
 async function saveSecureConfigUnlocked(config: ConfigStoreData): Promise<void> {
-  const { password, ...publicConfig } = config;
+  const { password, totpUri, ...publicConfig } = config;
   if (publicConfig.baseUrl) {
     const url = new URL(publicConfig.baseUrl);
     if (url.protocol !== "https:" || url.username || url.password) {
       throw new Error("The Brightspace URL must be HTTPS without embedded credentials.");
     }
     publicConfig.baseUrl = url.origin;
+  }
+  // Validated before EITHER secret is written, so a mistyped enrollment
+  // cannot replace the saved password and then fail halfway through setup.
+  const enrollment = totpUri === undefined ? undefined : normalizeTotpEnrollment(totpUri, config.username ?? "");
+  if (enrollment !== undefined && (!config.baseUrl || !config.username)) {
+    throw new Error("An authenticator enrollment requires a school URL and username.");
   }
   if (password !== undefined) {
     if (!config.baseUrl || !config.username || !password) {
@@ -34,6 +41,12 @@ async function saveSecureConfigUnlocked(config: ConfigStoreData): Promise<void> 
     await setStoredPassword(config.baseUrl, config.username, password);
     if (await getStoredPassword(config.baseUrl, config.username) !== password) {
       throw new Error("Could not verify the password in the native credential store. Configuration was preserved.");
+    }
+  }
+  if (enrollment !== undefined) {
+    await setStoredTotpUri(config.baseUrl!, config.username!, enrollment);
+    if (await getStoredTotpUri(config.baseUrl!, config.username!) !== enrollment) {
+      throw new Error("Could not verify the authenticator enrollment in the native credential store. Configuration was preserved.");
     }
   }
   if (publicConfig.passwordless && config.baseUrl && config.username) {

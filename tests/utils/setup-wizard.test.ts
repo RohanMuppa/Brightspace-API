@@ -150,6 +150,19 @@ describe("saved settings on a repeat run", () => {
     expect(saved.rememberMfa).toBeUndefined();
   });
 
+  it("passes a freshly typed authenticator enrollment through for the credential store", () => {
+    const uri = "otpauth://totp/alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    const saved = buildConfigToSave(null, { ...answers, totpUri: uri });
+    expect(saved.totpUri).toBe(uri);
+  });
+
+  it("leaves a saved enrollment alone when setup is rerun without one", () => {
+    // The enrollment lives in the credential store, never in config.json, so
+    // there is nothing to carry and nothing to clear.
+    const saved = buildConfigToSave({ baseUrl: answers.baseUrl, username: answers.username }, answers);
+    expect("totpUri" in saved).toBe(false);
+  });
+
   it("writes just the answers when there is nothing saved yet", () => {
     expect(buildConfigToSave(null, { ...answers, campus: "SUNY Poly" })).toEqual({
       ...answers,

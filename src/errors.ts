@@ -21,6 +21,7 @@ import { AUTH_COMMAND } from "./utils/commands.js";
 export type BrightspaceErrorCode =
   | "BRIGHTSPACE_AUTH_EXPIRED"
   | "BRIGHTSPACE_MFA_PENDING"
+  | "BRIGHTSPACE_AUTOMATIC_PENDING"
   | "BRIGHTSPACE_AUTH_FAILED"
   | "BRIGHTSPACE_NOT_FOUND"
   | "BRIGHTSPACE_FORBIDDEN"
@@ -95,6 +96,38 @@ export class BrightspaceMfaPendingError extends BrightspaceError {
     );
     this.name = "BrightspaceMfaPendingError";
     this.numberMatch = duplicate ? undefined : numberMatch;
+  }
+}
+
+const AUTOMATIC_RETRY_GUIDANCE =
+  "Retry right away without waiting: nothing is being requested from the user, and the sign-in is entering its own " +
+  "verification code in the background. Keep retrying until it succeeds or fails with a different error.";
+
+/**
+ * Another call in the same parallel batch already carried this exact
+ * progress report in full (brightspace-mcp-server#212, ported as #27).
+ */
+const AUTOMATIC_ALREADY_REPORTED =
+  "Brightspace sign-in is already in progress, answering its own verification code from the saved authenticator " +
+  "enrollment; another call in this batch has the details. Retry this call once the sign-in completes. Don't ask " +
+  "the user to approve anything.";
+
+/**
+ * A browser sign-in is answering a Microsoft Entra verification-code
+ * challenge from a saved authenticator enrollment. Distinct from
+ * BrightspaceMfaPendingError: nobody is being asked to approve anything on
+ * their phone, so the guidance must say "still working" instead.
+ */
+export class BrightspaceAutomaticPendingError extends BrightspaceError {
+  constructor(duplicate = false) {
+    super(
+      "BRIGHTSPACE_AUTOMATIC_PENDING",
+      duplicate
+        ? AUTOMATIC_ALREADY_REPORTED
+        : `Brightspace sign-in is answering its own verification code from the saved authenticator enrollment. ` +
+          `No phone approval is being requested. ${AUTOMATIC_RETRY_GUIDANCE}`,
+    );
+    this.name = "BrightspaceAutomaticPendingError";
   }
 }
 
@@ -189,6 +222,9 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
     "to approve as soon as one appears.",
   mfaPending:
     `Approve the sign-in request on your phone (Microsoft Authenticator or Duo). ${MFA_RETRY_GUIDANCE}`,
+  automaticPending:
+    `Brightspace sign-in is answering its own verification code from the saved authenticator enrollment. ` +
+    `No phone approval is being requested. ${AUTOMATIC_RETRY_GUIDANCE}`,
 };
 
 const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {
@@ -215,6 +251,7 @@ export function toPublicError(error: unknown): BrightspaceError {
 
   if (error instanceof AuthProcessError) {
     if (error.kind === "mfaPending") return new BrightspaceMfaPendingError(error.numberMatch, error.duplicate);
+    if (error.kind === "automaticPending") return new BrightspaceAutomaticPendingError(error.duplicate);
     return new BrightspaceAuthFailedError(error.kind, AUTH_FAILURE_GUIDANCE[error.kind]);
   }
 
