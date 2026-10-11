@@ -154,8 +154,16 @@ method's JSON result to stdout, and exits `0`.
 | `brightspace transcript --course ID --topic ID` (or `--url URL`) | `getVideoTranscript` |
 | `brightspace info` | `getInfo` |
 | `brightspace auth` | sign in once (opens the MFA flow); same as `brightspace-auth` |
+| `brightspace auth --logout` | end this computer's saved session early; same as `brightspace-auth --logout` |
 | `brightspace setup` | save school and credentials; same as `brightspace-setup` |
 | `brightspace --help` / `<command> --help` | usage |
+
+**To sign out early** (on a shared computer, say), run `npx -y brightspace-api@latest auth --logout`.
+It deletes this computer's saved Brightspace session, so the next request does a full sign-in.
+Your saved password, authenticator enrollment, and `config.json` are kept. It only clears this
+computer; it does not sign you out of Microsoft or Brightspace anywhere else, and a process that
+is already running can keep using its access token until it expires. If a sign-in is in progress,
+it refuses and deletes nothing.
 
 Errors go to **stderr** as `{"error":{"code":…,"message":…}}`, and stdout carries only the
 JSON result — safe to pipe into `jq`:

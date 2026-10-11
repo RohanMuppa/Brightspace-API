@@ -13,6 +13,7 @@ import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { retireLegacyProfile } from "./auth/legacy-profile.js";
 import { AuthenticationInProgressError } from "./auth/auth-lock.js";
 import { AUTOMATIC_PENDING_MARKER, RELAYED_CHALLENGE_MARKER, challengeMarker } from "./auth/mfa-challenge.js";
+import { runLogout } from "./auth/logout.js";
 import { AUTH_COMMAND, SETUP_COMMAND } from "./utils/commands.js";
 
 dotenv.config({ quiet: true });
@@ -32,6 +33,13 @@ async function requestMfaCode(): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  // Local and offline: no banner, no browser. It only deletes this machine's
+  // saved session files.
+  if (process.argv.includes("--logout")) {
+    process.exitCode = await runLogout();
+    return;
+  }
+
   const automatic = process.argv.includes("--automatic");
 
   try {
