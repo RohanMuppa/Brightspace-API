@@ -53,6 +53,12 @@ export class AuthenticationInProgressError extends Error {
    * CHALLENGE_FILE from this one.
    */
   challenge?: { kind?: "automatic"; numberMatch?: string };
+  /**
+   * How the auth lock's owner holds it, when the caller looked it up (see
+   * BrowserAuth.authenticate). Set only for the auth lock, never for the
+   * other locks that throw this same error.
+   */
+  ownerMode?: "automatic" | "explicit";
   constructor() {
     super("Authentication already in progress. Retry after the current authentication finishes.");
     this.name = "AuthenticationInProgressError";
@@ -63,6 +69,8 @@ interface Owner {
   pid: number;
   host: string;
   nonce: string;
+  /** How the lock is held. Defaults to "exclusive"; only an automatic background sign-in uses "automatic". */
+  mode?: "automatic" | "exclusive";
 }
 
 async function readOwner(lockPath: string): Promise<Owner | undefined> {
@@ -75,7 +83,7 @@ async function readOwner(lockPath: string): Promise<Owner | undefined> {
   return undefined;
 }
 
-function isDead(owner: Owner): boolean {
+function isDeadImpl(owner: Owner): boolean {
   // Session directories are local-only. DHCP can change the host's name
   // without changing this process table, so only PID liveness decides.
   try {
@@ -84,6 +92,23 @@ function isDead(owner: Owner): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+/** Exposed so tests can stub liveness checks without a real dead PID. */
+export const lockOps = {
+  isDead: isDeadImpl,
+};
+
+/**
+ * What a contender can tell about a lock's owner: how it holds the lock
+ * ("exclusive" reads back as "explicit", see readOwner) and whether that
+ * process is gone. undefined when there is no readable owner record, which
+ * is not proof the owner is gone (it may still be writing it).
+ */
+export async function inspectLockOwner(lockPath: string): Promise<{ mode: "automatic" | "explicit"; gone: boolean } | undefined> {
+  const owner = await readOwner(lockPath);
+  if (!owner) return undefined;
+  return { mode: owner.mode === "automatic" ? "automatic" : "explicit", gone: lockOps.isDead(owner) };
 }
 
 /** Remove only our fixed metadata names, after the directory was retired. */
@@ -117,16 +142,22 @@ class Lease {
   }
 }
 
-/** Acquire a process-shared lock without waiting or relying on its age. */
-export async function acquireProcessLock(lockPath: string): Promise<() => Promise<void>> {
+/**
+ * Acquire a process-shared lock without waiting or relying on its age.
+ * `mode` is recorded with the owner so a contender can tell an automatic
+ * background sign-in (worth waiting on before it has a challenge) apart from
+ * an explicit one (see inspectLockOwner); every other lock just takes the
+ * default.
+ */
+export async function acquireProcessLock(lockPath: string, mode: "automatic" | "exclusive" = "exclusive"): Promise<() => Promise<void>> {
   await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const lease = await acquireLease(lockPath, 0);
+  const lease = await acquireLease(lockPath, 0, mode);
   return () => lease.release();
 }
 
-async function acquireLease(lockPath: string, depth: number): Promise<Lease> {
+async function acquireLease(lockPath: string, depth: number, mode: "automatic" | "exclusive"): Promise<Lease> {
   if (depth > 16) throw new AuthenticationInProgressError();
-  const owner: Owner = { pid: process.pid, host: hostname(), nonce: randomUUID() };
+  const owner: Owner = { pid: process.pid, host: hostname(), nonce: randomUUID(), mode };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
@@ -143,14 +174,14 @@ async function acquireLease(lockPath: string, depth: number): Promise<Lease> {
     }
 
     const stale = await readOwner(lockPath);
-    if (!stale || !isDead(stale)) throw new AuthenticationInProgressError();
+    if (!stale || !lockOps.isDead(stale)) throw new AuthenticationInProgressError();
     // Recovery gets its own process lock within the stale directory. If a
     // recovering process crashes, the same dead-owner rules recover its lock.
     // Keep this claim in the directory during rename to serialize contenders.
-    const claim = await acquireLease(path.join(lockPath, "reclaim.lock"), depth + 1);
+    const claim = await acquireLease(path.join(lockPath, "reclaim.lock"), depth + 1, "exclusive");
     try {
       const current = await readOwner(lockPath);
-      if (current?.nonce !== stale.nonce || !isDead(current)) throw new AuthenticationInProgressError();
+      if (current?.nonce !== stale.nonce || !lockOps.isDead(current)) throw new AuthenticationInProgressError();
       const retired = `${lockPath}.stale.${owner.nonce}`;
       // A rename blocked by contention means another contender is inside this
       // directory recovering the same stale lock. That is someone else holding

@@ -7,6 +7,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A call queued right behind another call that was just answered with an MFA number — a caller
+  that serializes its own Brightspace calls against an expired session sends them one after
+  another, so each lands moments after the previous one answered — used to be treated as a retry
+  and wait up to 45 seconds for an approval it could not yet act on. It is now answered at once,
+  in full, as its sibling's queue (chained for up to 20 seconds, so a tight loop of calls still has
+  to wait like a real retry). Separately, a caller whose sign-in found another process's
+  background sign-in holding the lock before that sign-in had even reached its MFA challenge used
+  to be told "busy" right away; it now waits on that sign-in the same way a retry already waited on
+  a published challenge, and is answered with the number as soon as one appears. An explicit
+  `brightspace-auth` run in a terminal, which never publishes a challenge, is unaffected and still
+  answers "busy". Ported from
+  [RohanMuppa/brightspace-mcp-server#228](https://github.com/RohanMuppa/brightspace-mcp-server/pull/228)
+  (fixes [#41](https://github.com/RohanMuppa/Brightspace-API/issues/41)).
+
 - A retry whose sign-in found ANOTHER process holding the cross-process lock (two scripts sharing
   one session store, say) now waits on that process's sign-in instead of repeating its number
   every time. A relayed `BrightspaceMfaPendingError` (or `BrightspaceAutomaticPendingError`) used

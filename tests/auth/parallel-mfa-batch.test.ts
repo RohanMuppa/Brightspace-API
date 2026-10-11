@@ -144,6 +144,8 @@ describe("a parallel batch of calls against an expired session", () => {
     const lost = answer(runner.run());
     child.stdout.write(`MFA_NUMBER:${NUMBER}\n`);
     await lost;
+    // A real retry comes after the caller has answered, past SIBLING_GRACE_MS.
+    await vi.advanceTimersByTimeAsync(2000);
 
     // A later call (another batch, or a retry) must carry the digits again.
     const later = answer(runner.run());
