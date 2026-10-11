@@ -14,7 +14,7 @@ import type { SSOFlow } from "./sso-flow.js";
 import type { RequestMfaCode, OnMfaChallenge } from "./sso-flow.js";
 import { isDuoPrompt } from "./duo-mfa.js";
 import { BrowserStateStore } from "./browser-state-store.js";
-import { acquireProcessLock, AuthenticationInProgressError } from "./auth-lock.js";
+import { acquireProcessLock, AuthenticationInProgressError, inspectLockOwner } from "./auth-lock.js";
 import { authLockPath, publishAutomaticProgress, publishChallenge, relayChallenge } from "./mfa-challenge.js";
 import { AuthCooldown } from "./auth-cooldown.js";
 import { mintAccessToken } from "./token-mint.js";
@@ -111,10 +111,13 @@ export class BrowserAuth {
   }
 
   async authenticate(options: AuthenticateOptions = {}): Promise<TokenData> {
-    const release = await acquireProcessLock(this.lockPath).catch(async (error: unknown) => {
+    const release = await acquireProcessLock(this.lockPath, options.automatic ? "automatic" : "exclusive").catch(async (error: unknown) => {
       // Hand back the number the owner is showing, so this caller's user can
       // approve that sign-in instead of being told only to wait for it.
-      if (error instanceof AuthenticationInProgressError) error.challenge = await relayChallenge(this.lockPath);
+      if (error instanceof AuthenticationInProgressError) {
+        error.challenge = await relayChallenge(this.lockPath);
+        error.ownerMode = (await inspectLockOwner(this.lockPath))?.mode;
+      }
       throw error;
     });
     try {
