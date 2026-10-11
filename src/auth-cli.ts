@@ -12,7 +12,7 @@ import { MfaApprovalError } from "./auth/sso-flow.js";
 import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { retireLegacyProfile } from "./auth/legacy-profile.js";
 import { AuthenticationInProgressError } from "./auth/auth-lock.js";
-import { AUTOMATIC_PENDING_MARKER, challengeMarker } from "./auth/mfa-challenge.js";
+import { AUTOMATIC_PENDING_MARKER, RELAYED_CHALLENGE_MARKER, challengeMarker } from "./auth/mfa-challenge.js";
 import { AUTH_COMMAND, SETUP_COMMAND } from "./utils/commands.js";
 
 dotenv.config({ quiet: true });
@@ -84,6 +84,7 @@ async function main(): Promise<void> {
     // Another process's sign-in holds the lock and is showing a challenge:
     // pass it on, so this caller can tell its user what to approve.
     if (automatic && error instanceof AuthenticationInProgressError && error.challenge) {
+      console.log(RELAYED_CHALLENGE_MARKER);
       console.log(error.challenge.kind === "automatic"
         ? AUTOMATIC_PENDING_MARKER
         : challengeMarker(error.challenge.numberMatch));
