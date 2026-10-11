@@ -7,6 +7,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A retry whose sign-in found ANOTHER process holding the cross-process lock (two scripts sharing
+  one session store, say) now waits on that process's sign-in instead of repeating its number
+  every time. A relayed `BrightspaceMfaPendingError` (or `BrightspaceAutomaticPendingError`) used
+  to be re-thrown at once on every retry, so a caller retrying in a loop made several calls in
+  quick succession and could conclude the five-minute approval window had closed while the other
+  sign-in was still waiting. A retry now polls the lock for up to 45 seconds (never past 55
+  seconds total), relaying the challenge on each look so the owner's abandonment watcher is not
+  tripped, and resolves as soon as the owner releases the lock. The first call for a given
+  challenge is still answered immediately, as before. Ported from
+  [RohanMuppa/brightspace-mcp-server#225](https://github.com/RohanMuppa/brightspace-mcp-server/pull/225)
+  (fixes [#37](https://github.com/RohanMuppa/Brightspace-API/issues/37)).
+
 - `getDiscussions` `postCount` now counts only the posts it returns, excluding deleted posts (fixes [#31](https://github.com/RohanMuppa/Brightspace-API/issues/31)).
 
 - With `onAuthExpired: "login"`, a parallel batch of calls against an expired session got the

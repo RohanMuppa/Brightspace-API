@@ -99,3 +99,13 @@ export function challengeMarker(numberMatch: string | null | undefined): string 
  * beside challengeMarker so the child and AuthRunner cannot drift apart.
  */
 export const AUTOMATIC_PENDING_MARKER = "AUTH_AUTOMATIC_PENDING";
+
+/**
+ * Printed on the line before a challenge marker when the challenge is another
+ * process's, relayed from the lock directory, rather than this child's own.
+ * The parent then knows its caller is waiting on a sign-in it does not own,
+ * which it can only watch through the lock (see AuthRunner.awaitRelayedOwner).
+ * The child is always the same build as the parent, so no negotiation is
+ * needed.
+ */
+export const RELAYED_CHALLENGE_MARKER = "AUTH_RELAYED";
