@@ -9,7 +9,7 @@ import * as os from "node:os";
 import { createHash } from "node:crypto";
 import dotenv from "dotenv";
 import type { AppConfig } from "../types/index.js";
-import { configStoreExists, loadConfigStore } from "./config-store.js";
+import { configStoreExists, loadConfigStore, type ConfigStoreData } from "./config-store.js";
 import { resolveStoredPassword } from "./secure-config.js";
 import { getStoredTotpUri } from "../auth/credential-store.js";
 import { normalizeTotpEnrollment } from "../auth/totp.js";
@@ -25,22 +25,56 @@ export interface LoadConfigOptions {
   tolerateCredentialStore?: boolean;
 }
 
-export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppConfig> {
-  dotenv.config({ quiet: true });
+function readConfigStore(): ConfigStoreData | null {
   const store = configStoreExists() ? loadConfigStore() : null;
-
   if (store) {
     console.error("[config] Loaded base config from ~/.brightspace-mcp/config.json");
   } else {
     console.error("[config] No config.json found, using environment variables");
   }
+  return store;
+}
 
-  // Resolve sessionDir: env > store > default
+/**
+ * Which school and account this configuration signs in as, and where that
+ * account's session lives (env > store > default for each). Shared by
+ * loadConfig and by commands that need only the location, such as
+ * `auth --logout`, so they can never disagree about where a session is.
+ */
+function resolveAccountLocation(store: ConfigStoreData | null): {
+  baseUrl: string; username: string | undefined; sessionRoot: string; sessionDir: string;
+} {
   const sessionRoot = process.env.D2L_SESSION_DIR
     ? expandTilde(process.env.D2L_SESSION_DIR)
     : store?.sessionDir
       ? expandTilde(store.sessionDir)
       : path.join(os.homedir(), ".d2l-session");
+
+  const configuredUrl = new URL(process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com");
+  if (configuredUrl.protocol !== "https:" || configuredUrl.username || configuredUrl.password) {
+    throw new Error("The Brightspace URL must be an HTTPS school URL without embedded credentials.");
+  }
+  const baseUrl = configuredUrl.origin;
+  const username = process.env.D2L_USERNAME || store?.username;
+  // A new account must never inherit another account's cookies, even at the same school.
+  return { baseUrl, username, sessionRoot, sessionDir: accountSessionDirectory(sessionRoot, baseUrl, username) };
+}
+
+/**
+ * Where the configured account keeps its saved session. Unlike loadConfig it
+ * reads no password and migrates nothing, so it works when the credential
+ * store is locked. `sessionDir` holds the account's files; `sessionRoot` is
+ * the directory above any `accounts/<hash>/` layer.
+ */
+export function resolveSessionLocation(): { sessionDir: string; sessionRoot: string } {
+  dotenv.config({ quiet: true });
+  const { sessionDir, sessionRoot } = resolveAccountLocation(readConfigStore());
+  return { sessionDir, sessionRoot };
+}
+
+export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppConfig> {
+  dotenv.config({ quiet: true });
+  const store = readConfigStore();
 
   // Code-entry and other interactive MFA methods need a visible browser.
   const headless = envBoolean(process.env.D2L_HEADLESS, "D2L_HEADLESS")
@@ -81,12 +115,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     ?? store?.rememberMfa
     ?? false;
 
-  const configuredUrl = new URL(process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com");
-  if (configuredUrl.protocol !== "https:" || configuredUrl.username || configuredUrl.password) {
-    throw new Error("The Brightspace URL must be an HTTPS school URL without embedded credentials.");
-  }
-  const baseUrl = configuredUrl.origin;
-  const username = process.env.D2L_USERNAME || store?.username;
+  const { baseUrl, username, sessionRoot, sessionDir } = resolveAccountLocation(store);
   const password = passwordless ? undefined : await resolveStoredPassword(baseUrl, username, store, options.tolerateCredentialStore === true);
   // Opt-in: only an enrollment the user deliberately saved makes the Entra
   // sign-in answer a verification-code challenge itself. With none, every MFA
@@ -101,8 +130,6 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
     // an optional extra, unlike the password resolveStoredPassword above
     // reports a locked or missing store for, loudly.
     : username ? (await getStoredTotpUri(baseUrl, username).catch(() => null)) ?? undefined : undefined;
-  // A new account must never inherit another account's cookies, even at the same school.
-  const sessionDir = accountSessionDirectory(sessionRoot, baseUrl, username);
   const legacyMigration = sessionDir !== sessionRoot ? await migrateLegacyState(sessionRoot) : undefined;
 
   return {

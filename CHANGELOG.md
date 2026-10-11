@@ -22,6 +22,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- `auth --logout` (`brightspace-auth --logout`, or `npx -y brightspace-api@latest auth --logout`)
+  ends the saved Brightspace session on this computer early, so the next request does a full
+  sign-in. It resolves the session directory the same way sign-in does (`resolveSessionLocation()`
+  shares `loadConfig`'s account resolution), deletes `session.json` and
+  `storage-state.encrypted.json` there, plus a plaintext `storage-state.json` left by a
+  pre-encryption install, and prints the names it removed. It never touches the saved password,
+  `config.json`, or any credential-store entry (the session encryption key stays and is reused by
+  the next sign-in), holds the sign-in lock while deleting, and exits 2 without deleting anything
+  if a sign-in is already in progress. Ported from
+  [RohanMuppa/brightspace-mcp-server#215](https://github.com/RohanMuppa/brightspace-mcp-server/pull/215)
+  (fixes [#36](https://github.com/RohanMuppa/Brightspace-API/issues/36)).
+
 - Opt-in automatic answering of Microsoft Entra verification-code MFA. `setup` optionally saves an
   authenticator setup key or `otpauth://` link (hidden input, Enter to skip) in the native
   credential store under a `totp:`-prefixed account, read back by `loadConfig` as `totpUri`

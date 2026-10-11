@@ -126,6 +126,17 @@ describe("SessionStore", () => {
     expect(await fs.readFile(path.join(dir, "session.json"), "utf8")).toBe("{broken");
   });
 
+  it("removes a session permanently without decrypting it, even if unreadable", async () => {
+    await fs.writeFile(path.join(dir, "session.json"), "{broken");
+    expect(await store.remove()).toBe(true);
+    await expect(fs.access(path.join(dir, "session.json"))).rejects.toThrow();
+    expect((await fs.readdir(dir)).some((name) => name.startsWith("session.json.retired-"))).toBe(false);
+  });
+
+  it("reports false when there is no session to remove", async () => {
+    expect(await store.remove()).toBe(false);
+  });
+
   it("keeps a new login when an older mint tries to save or clear", async () => {
     await store.save(testToken);
     const newer = { ...testToken, capturedAt: 200, accessToken: "newer-login" };
