@@ -355,6 +355,17 @@ export class AuthRunner {
   private pendingChallenge: { kind: "mfaPending" | "automaticPending"; numberMatch?: string } | null = null;
   /** Resolves on the next marker from the current child; null between children. */
   private challengeSignal: Promise<void> | null = null;
+  /**
+   * Callers polling the current child (joinBackgroundChild), woken whenever
+   * it reports a challenge, so a changed number reaches them at once.
+   */
+  private readonly challengeWatchers = new Set<() => void>();
+  /**
+   * The current child's last number-match challenge (relayKey) handed back
+   * to a caller here; null until one is. A retry joining the child waits
+   * only while the number is still this one (brightspace-mcp-server#229).
+   */
+  private challengeToldKey: string | null = null;
   /** Callers inside run() right now. */
   private waiting = 0;
   /** When the last caller left run(). */
@@ -439,9 +450,12 @@ export class AuthRunner {
     } catch (error) {
       this.noteRelayReported(error);
       const answer = dedupeChallenge(error, wave);
-      if (answer instanceof AuthProcessError && answer.kind === "mfaPending" && !answer.duplicate && !answer.relayed) {
-        const now = Date.now();
-        this.challengeTold = { anchor: now, last: now };
+      if (answer instanceof AuthProcessError && answer.kind === "mfaPending" && !answer.relayed) {
+        this.challengeToldKey = relayKey(answer.kind, answer.numberMatch);
+        if (!answer.duplicate) {
+          const now = Date.now();
+          this.challengeTold = { anchor: now, last: now };
+        }
       }
       throw answer;
     } finally {
@@ -460,6 +474,7 @@ export class AuthRunner {
     const told = this.challengeTold;
     if (!this.childDone || pending?.kind !== "mfaPending" || !told || !isQueuedSibling(told, arrivedAt)) return null;
     told.last = arrivedAt;
+    this.challengeToldKey = relayKey(pending.kind, pending.numberMatch);
     // In full, not the short sibling line: if the answer before it was lost,
     // this one still carries the digits (#201). It never reaches catch in
     // run(), so it extends the chain without restarting it.
@@ -587,8 +602,9 @@ export class AuthRunner {
           ? { phase: "automatic" }
           : { phase: "approval", numberMatch: relayed.numberMatch ?? (latest.phase === "approval" ? latest.numberMatch : undefined) };
         // A challenge appearing while this caller waited on a sign-in that had
-        // none yet is what the user needs right now: answer with it at once.
-        if (next.phase === "approval" && latest.phase !== "approval") {
+        // none yet, or a changed number (Entra's expired and the owner asked
+        // for a new one), is what the user needs right now: answer at once.
+        if (next.phase === "approval" && (latest.phase !== "approval" || next.numberMatch !== latest.numberMatch)) {
           throw new AuthProcessError(...mfaPendingFailure(next.numberMatch), next.numberMatch, false, true);
         }
         latest = next;
@@ -650,6 +666,11 @@ export class AuthRunner {
    * read the number from the previous answer and is approving right now, so
    * this is the call that should carry the result. A still-unapproved
    * sign-in re-answers with the latest challenge and the caller tries again.
+   * A number-match challenge no caller here was told yet (it changed since,
+   * or the call that would have carried it gave up first) answers at once,
+   * whether it is already there or arrives during the poll
+   * (brightspace-mcp-server#229): the user is looking at a number that no
+   * longer works.
    */
   private async joinBackgroundChild(childDone: Promise<boolean>, startedAt: number): Promise<boolean> {
     if (!this.pendingChallenge && this.challengeSignal) {
@@ -659,12 +680,22 @@ export class AuthRunner {
     const challenge = this.pendingChallenge;
     if (!challenge) return childDone;
     const pollMs = Math.max(0, pollWindowMs(Date.now() - startedAt));
+    const toldKey = this.challengeToldKey;
 
     return new Promise<boolean>((resolve, reject) => {
       let settled = false;
+      const watchNumber = () => {
+        const pending = this.pendingChallenge;
+        if (settled || pending?.kind !== "mfaPending" || relayKey(pending.kind, pending.numberMatch) === toldKey) return;
+        settled = true;
+        clearTimeout(pollTimer);
+        this.challengeWatchers.delete(watchNumber);
+        reject(new AuthProcessError(...mfaPendingFailure(pending.numberMatch), pending.numberMatch));
+      };
       const pollTimer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        this.challengeWatchers.delete(watchNumber);
         const pending = this.pendingChallenge ?? challenge;
         if (pending.kind === "automaticPending") {
           reject(automaticPendingFailure());
@@ -674,17 +705,21 @@ export class AuthRunner {
         reject(new AuthProcessError(...mfaPendingFailure(numberMatch), numberMatch));
       }, pollMs);
       pollTimer.unref?.();
+      this.challengeWatchers.add(watchNumber);
+      watchNumber();
       childDone.then(
         (value) => {
           if (settled) return;
           settled = true;
           clearTimeout(pollTimer);
+          this.challengeWatchers.delete(watchNumber);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
           clearTimeout(pollTimer);
+          this.challengeWatchers.delete(watchNumber);
           reject(error);
         },
       );
@@ -778,12 +813,14 @@ export class AuthRunner {
           this.challengeSignal = null;
           this.wave = null;
           this.challengeTold = null;
+          this.challengeToldKey = null;
           this.relayProbe = null;
         }
       });
       trackedCompletion.catch(() => { /* see comment above */ });
       this.childDone = trackedCompletion;
       this.pendingChallenge = null;
+      this.challengeToldKey = null;
       this.relayProbe = null;
       let resolveChallengeSignal!: () => void;
       this.challengeSignal = new Promise<void>((res) => { resolveChallengeSignal = res; });
@@ -828,6 +865,9 @@ export class AuthRunner {
           this.pendingChallenge = { kind: "mfaPending", numberMatch: matched ?? this.pendingChallenge?.numberMatch };
         }
         if (firstChallenge) resolveChallengeSignal();
+        // A caller already polling is answered with a number it was not told
+        // (brightspace-mcp-server#229); the rest keep waiting.
+        for (const watch of [...this.challengeWatchers]) watch();
         const answer = new AuthProcessError(...mfaPendingFailure(this.pendingChallenge?.numberMatch), this.pendingChallenge?.numberMatch, false, relayed);
         if (relayed) this.relayProbe = answer;
         if (!callerSettled) settleCaller(answer);
@@ -937,7 +977,10 @@ export class AuthRunner {
             4: ["unsupported", "This identity provider cannot complete headless authentication. See the authentication logs."],
             5: ["secureStorage", "The native credential store is unavailable or locked. Unlock it and retry."],
             6: ["transport", "Brightspace authentication is temporarily unavailable because of a network or server failure. Your saved session was preserved. Try again later."],
-            7: mfaPendingFailure(numberMatch),
+            // The MFA loop gave up (MfaApprovalError) and recorded the
+            // cooldown: the number it showed no longer works, so a caller
+            // still polling hears what the next call would, not "enter 42".
+            7: ["cooldown", `The MFA approval was not completed in time. Automatic MFA is paused; run ${AUTH_COMMAND} to retry immediately.`],
           };
           // Busy, but the owning sign-in's challenge came through: the caller
           // was told what to approve, so answer with that, not "busy".

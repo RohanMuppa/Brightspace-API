@@ -7,6 +7,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- When Entra's MFA number expired and the background sign-in asked for a new one, a caller
+  already waiting on that sign-in only heard the new number when its 45-second poll ended, while
+  the user kept trying the old one. A caller polling this process's sign-in is now answered the
+  moment it reports a number that caller was not told (a changed number, or the first number after
+  an automatic code sign-in falls back to one), and a retry joining with such a number is answered
+  at once. A caller waiting on another process's sign-in is answered as soon as that sign-in's
+  number changes. When the sign-in's MFA loop gives up (exit 7), a caller still waiting is now
+  told about the cooldown it just recorded instead of to enter a number that no longer works.
+  Ported from
+  [RohanMuppa/brightspace-mcp-server#229](https://github.com/RohanMuppa/brightspace-mcp-server/issues/229).
+
 - `auth --logout` used to leave a script or process that was already running holding its old
   access token and cached API responses for up to an hour, even after the saved session was
   deleted. `TokenManager` now checks the saved session file's identity (a stat, never a decrypt)
