@@ -30,7 +30,7 @@ export interface ClearSessionResult {
 /** Browser state files other than the session token itself, in the order they are deleted. */
 const BROWSER_STATE_FILES = [BROWSER_STATE_FILE, LEGACY_BROWSER_STATE_FILE];
 
-class RemoveError extends Error {
+export class RemoveError extends Error {
   constructor(readonly file: string, cause: unknown) {
     super(`Could not remove ${file}: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = "RemoveError";
@@ -44,6 +44,17 @@ async function removeIfPresent(file: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw new RemoveError(path.basename(file), error);
+  }
+}
+
+/** SessionStore.remove() throws SessionStoreError; report it like every other file that would not delete. */
+async function removeSessionFile(sessionDir: string): Promise<boolean> {
+  try {
+    return await new SessionStore(sessionDir).remove();
+  } catch (error) {
+    // A session write that holds its lock too long is still "in progress", not a file that won't delete.
+    if (error instanceof AuthenticationInProgressError) throw error;
+    throw new RemoveError(SESSION_FILE, error);
   }
 }
 
@@ -75,7 +86,7 @@ export async function clearSavedSession(sessionDir: string): Promise<ClearSessio
   const release = await acquireProcessLock(authLockPath(sessionDir));
   try {
     const removed: string[] = [];
-    if (await new SessionStore(sessionDir).remove()) removed.push(SESSION_FILE);
+    if (await removeSessionFile(sessionDir)) removed.push(SESSION_FILE);
     for (const name of BROWSER_STATE_FILES) {
       if (await removeIfPresent(path.join(sessionDir, name))) removed.push(name);
     }
@@ -93,7 +104,8 @@ export interface LogoutOptions {
 }
 
 const KEPT = "Kept: your saved password, config.json, and any authenticator or credential-store entries.";
-const MEMORY_NOTE = "A script or process that is already running may still hold an access token in memory until it expires. Restart it to drop the token right away.";
+const MEMORY_NOTE =
+  "Another script or process already running against this session notices on its next request and signs in again from scratch. One started before this update may keep answering for up to an hour (the token lifetime); restart it to drop that right away.";
 const LOCAL_ONLY = "This only clears files on this computer. It does not sign you out of Microsoft or Brightspace on their servers.";
 
 /**

@@ -161,9 +161,11 @@ method's JSON result to stdout, and exits `0`.
 **To sign out early** (on a shared computer, say), run `npx -y brightspace-api@latest auth --logout`.
 It deletes this computer's saved Brightspace session, so the next request does a full sign-in.
 Your saved password, authenticator enrollment, and `config.json` are kept. It only clears this
-computer; it does not sign you out of Microsoft or Brightspace anywhere else, and a process that
-is already running can keep using its access token until it expires. If a sign-in is in progress,
-it refuses and deletes nothing.
+computer; it does not sign you out of Microsoft or Brightspace anywhere else. Another script or
+process already running against this session (including a sibling `brightspace-mcp-server`)
+notices on its next request and signs in again from scratch; one started before this update may
+keep answering for up to an hour (the token lifetime) — restart it to drop that right away. If a
+sign-in is in progress, it refuses and deletes nothing.
 
 Errors go to **stderr** as `{"error":{"code":…,"message":…}}`, and stdout carries only the
 JSON result — safe to pipe into `jq`:

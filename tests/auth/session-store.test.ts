@@ -158,3 +158,55 @@ describe("SessionStore", () => {
     expect(["mint-a", "mint-b"]).toContain((await store.load())?.accessToken);
   });
 });
+
+describe("SessionStore.fingerprint", () => {
+  let dir: string;
+  let backend: MemoryCredentialBackend;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "session-fingerprint-"));
+    backend = new MemoryCredentialBackend();
+  });
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+
+  /** A path no operating system can stat: Node rejects the NUL byte before any syscall. */
+  const unstattablePath = (base: string) => path.join(base, "bad\0dir");
+
+  it("is null when session.json does not exist, and a string once it does, without reading it", async () => {
+    const store = new SessionStore(dir, { backend });
+    expect(await store.fingerprint()).toBeNull();
+    await fs.writeFile(path.join(dir, "session.json"), "not even json");
+    expect(typeof await store.fingerprint()).toBe("string");
+  });
+
+  it("is stable while the file is untouched and changes when it is rewritten", async () => {
+    const store = new SessionStore(dir, { backend, trash: retireTestFile });
+    await store.save(testToken);
+    const first = await store.fingerprint();
+    expect(await store.fingerprint()).toBe(first);
+
+    await store.save({ ...testToken, accessToken: "second-token-with-a-longer-text-1234567890" });
+    const second = await store.fingerprint();
+    expect(second).not.toBe(first);
+  });
+
+  it("changes when the file is deleted and recreated with the same contents", async () => {
+    const file = path.join(dir, "session.json");
+    const store = new SessionStore(dir, { backend });
+    await fs.writeFile(file, "same bytes");
+    const first = await store.fingerprint();
+    await fs.unlink(file);
+    expect(await store.fingerprint()).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await fs.writeFile(file, "same bytes");
+    expect(await store.fingerprint()).not.toBe(first);
+  });
+
+  it("is undefined, not null, when the check fails for another reason", async () => {
+    expect(await new SessionStore(unstattablePath(dir), { backend }).fingerprint()).toBeUndefined();
+  });
+
+  it("is null when the whole session directory is gone", async () => {
+    const store = new SessionStore(path.join(dir, "never-created"), { backend });
+    expect(await store.fingerprint()).toBeNull();
+  });
+});

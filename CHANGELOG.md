@@ -7,6 +7,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `auth --logout` used to leave a script or process that was already running holding its old
+  access token and cached API responses for up to an hour, even after the saved session was
+  deleted. `TokenManager` now checks the saved session file's identity (a stat, never a decrypt)
+  before trusting its in-memory token, and `D2LApiClient` does the same before serving a cached
+  response, so every process sharing a session notices a sign-out — or a different account signing
+  in over it — on its very next call instead of needing a restart. Ported the shared session-store
+  and token-manager plumbing from
+  [RohanMuppa/brightspace-mcp-server#233](https://github.com/RohanMuppa/brightspace-mcp-server/pull/233)
+  (fixes [#43](https://github.com/RohanMuppa/Brightspace-API/issues/43)); the `sign_out` MCP tool
+  itself does not apply here, since this package has no MCP tool surface — `auth --logout` is its
+  equivalent entry point.
+
 - A call queued right behind another call that was just answered with an MFA number — a caller
   that serializes its own Brightspace calls against an expired session sends them one after
   another, so each lands moments after the previous one answered — used to be treated as a retry
