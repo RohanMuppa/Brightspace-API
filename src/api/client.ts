@@ -134,6 +134,13 @@ export class D2LApiClient {
   private versions: ApiVersions | null = null;
   /** Single in-flight discovery, so concurrent first requests share one fetch. */
   private versionsInFlight: Promise<ApiVersions> | null = null;
+  /**
+   * Bumped by clearCache(). A GET remembers the value it started under and
+   * stores its result only if it is unchanged, so a read begun with the old
+   * session cannot refill a cache that was cleared (a sign-out detected
+   * elsewhere) while it was in flight.
+   */
+  private cacheGeneration = 0;
 
   constructor(options: D2LApiClientOptions) {
     // HTTPS-only enforcement, on a parsed URL rather than a string prefix so
@@ -262,6 +269,12 @@ export class D2LApiClient {
     // ten minutes of due dates to get_upcoming_due_dates. Trusting the
     // surviving entry served the longer caller's staleness to the shorter one.
     if (options?.ttl) {
+      // The saved session may have been deleted by another process (logout),
+      // or replaced by a different account's. A signed-out client must not
+      // answer from memory, so drop every cached response and let this read
+      // take the normal path. Only asked when something is cached, so a cold
+      // cache costs nothing.
+      if (this.cache.size > 0 && await this.tokenManager.sessionChanged?.()) this.clearCache();
       const age = this.cache.ageOf(path);
       if (age !== undefined && age <= options.ttl) {
         log("DEBUG", `Cache hit: ${path}`);
@@ -269,10 +282,11 @@ export class D2LApiClient {
       }
     }
 
+    const generation = this.cacheGeneration;
     const resolved = await this.resolvePath(path);
     const data = await this.withAuthentication(resolved, token => this.makeRequest<T>(resolved, token));
 
-    if (options?.ttl) {
+    if (options?.ttl && generation === this.cacheGeneration) {
       this.cache.set(path, data, options.ttl);
       log("DEBUG", `Cached response for ${path} (TTL: ${options.ttl}ms)`);
     }
@@ -684,9 +698,12 @@ export class D2LApiClient {
   }
 
   /**
-   * Clear all cached responses.
+   * Clear all cached responses, and stop a GET already in flight from
+   * writing its (stale) result back in: it began under the session being
+   * discarded, but the caller that started it still gets its own answer.
    */
   clearCache(): void {
+    this.cacheGeneration++;
     this.cache.clear();
     log("DEBUG", "Cache cleared");
   }

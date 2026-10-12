@@ -6,7 +6,7 @@ import { acquireProcessLock, AuthenticationInProgressError } from "../../src/aut
 import { authLockPath } from "../../src/auth/mfa-challenge.js";
 import { BrowserStateStore } from "../../src/auth/browser-state-store.js";
 import { getStoredPassword, setStoredPassword } from "../../src/auth/credential-store.js";
-import { clearSavedSession, runLogout } from "../../src/auth/logout.js";
+import { clearSavedSession, RemoveError, runLogout } from "../../src/auth/logout.js";
 import { SessionStore } from "../../src/auth/session-store.js";
 import { accountSessionDirectory } from "../../src/utils/config.js";
 import { MemoryCredentialBackend, testBrowserState, testToken } from "./secure-store-fixtures.js";
@@ -101,6 +101,21 @@ describe("clearSavedSession", () => {
     expect(await exists(path.join(root, "accounts"))).toBe(false);
   });
 
+  it("throws an exported RemoveError naming the file when a removal fails", async () => {
+    await fs.mkdir(path.join(root, "session.json"));
+    await fs.writeFile(path.join(root, "session.json", "inner"), "x");
+    const error = await clearSavedSession(root).catch((caught) => caught);
+    expect(error).toBeInstanceOf(RemoveError);
+    expect((error as RemoveError).file).toBe("session.json");
+  });
+
+  it("reports a storage-state file that cannot be deleted as a RemoveError naming it", async () => {
+    await fs.mkdir(path.join(root, "storage-state.encrypted.json"));
+    const error = await clearSavedSession(root).catch((caught) => caught);
+    expect(error).toBeInstanceOf(RemoveError);
+    expect((error as RemoveError).file).toBe("storage-state.encrypted.json");
+  });
+
   it("leaves no lock directory behind after removing files", async () => {
     await seed(root);
     await clearSavedSession(root);
@@ -182,7 +197,8 @@ describe("runLogout", () => {
     expect(output()).toMatch(/saved password/i);
     expect(output()).toContain("config.json");
     expect(output()).toMatch(/authenticator/i);
-    expect(output()).toMatch(/access token in memory/i);
+    expect(output()).toMatch(/notices on its next request and signs in again from scratch/i);
+    expect(output()).toMatch(/keep answering for up to an hour/i);
     expect(output()).toMatch(/not sign you out of Microsoft or Brightspace/i);
     expect(output()).toContain("npx -y brightspace-api@latest auth");
     // Names only, never a path.
@@ -192,7 +208,7 @@ describe("runLogout", () => {
   it("says there is nothing to clear and exits 0", async () => {
     expect(await runLogout({ sessionDir: dir, print })).toBe(0);
     expect(output()).toMatch(/nothing to clear/i);
-    expect(output()).toMatch(/access token in memory/i);
+    expect(output()).toMatch(/notices on its next request/i);
     expect(output()).not.toMatch(/removed/i);
   });
 
@@ -217,6 +233,29 @@ describe("runLogout", () => {
     expect(await runLogout({ sessionDir: dir, print })).toBe(1);
 
     expect(output()).toContain("storage-state.encrypted.json");
+    expect(output()).toMatch(/run .* again/i);
+  });
+
+  it("reports a session write that holds its lock as in progress, not as a file that won't delete", async () => {
+    await fs.writeFile(path.join(dir, "session.json"), "x");
+    const remove = vi.spyOn(SessionStore.prototype, "remove").mockRejectedValue(new AuthenticationInProgressError("session write in progress"));
+    try {
+      expect(await runLogout({ sessionDir: dir, print })).toBe(2);
+    } finally {
+      remove.mockRestore();
+    }
+
+    expect(output()).toMatch(/sign-in is in progress/i);
+    expect(output()).not.toMatch(/incomplete/i);
+  });
+
+  it("exits 1 naming session.json when it alone cannot be deleted", async () => {
+    await fs.mkdir(path.join(dir, "session.json"));
+    await fs.writeFile(path.join(dir, "session.json", "inner"), "x");
+
+    expect(await runLogout({ sessionDir: dir, print })).toBe(1);
+
+    expect(output()).toContain("session.json");
     expect(output()).toMatch(/run .* again/i);
   });
 });
