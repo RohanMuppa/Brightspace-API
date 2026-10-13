@@ -129,7 +129,7 @@ interface DropboxFolder {
       }>;
     }>;
   } | null;
-  GroupTypeId: number | null; // null = individual, non-null = group
+  GroupTypeId?: number | null; // absent/null = individual, a number = group
   SubmissionType: number | null;
 }
 
@@ -425,7 +425,7 @@ export async function fetchCourseAssignments(
           : "",
         dueDate: folder.DueDate,
         points: folder.Assessment?.ScoreDenominator ?? null,
-        isGroup: folder.GroupTypeId !== null,
+        isGroup: folder.GroupTypeId !== null && folder.GroupTypeId !== undefined,
         rubric: folder.Assessment?.Rubrics?.map((r) => ({
           name: r.Name,
           criteria: r.Criteria?.map((c) => ({

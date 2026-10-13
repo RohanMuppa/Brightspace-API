@@ -7,6 +7,11 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A dropbox folder that D2L sent without a `GroupTypeId` key was reported as a group assignment
+  (`isGroup: true`), because only an explicit `null` counted as individual. A missing
+  `GroupTypeId` now means an individual folder, the same as `null`. Ported from
+  [RohanMuppa/brightspace-mcp-server#240](https://github.com/RohanMuppa/brightspace-mcp-server/issues/240).
+
 - When Entra's MFA number expired and the background sign-in asked for a new one, a caller
   already waiting on that sign-in only heard the new number when its 45-second poll ended, while
   the user kept trying the old one. A caller polling this process's sign-in is now answered the
