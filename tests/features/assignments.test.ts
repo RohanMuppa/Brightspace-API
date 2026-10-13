@@ -59,6 +59,30 @@ describe("fetchCourseAssignments", () => {
     expect(dropbox.instructions).toBe("");
     expect(quiz.instructions).toBe("");
   });
+
+  it("calls a folder with no GroupTypeId an individual folder (brightspace-mcp-server#240)", async () => {
+    const apiClient = {
+      le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
+      get: vi.fn(async (path: string) => {
+        if (path.endsWith("/dropbox/folders/")) {
+          return [
+            // D2L may leave the key out entirely; missing means individual, as null does.
+            { Id: 55, Name: "HW 1", DueDate: null, IsHidden: false },
+            { Id: 56, Name: "Group Project", DueDate: null, IsHidden: false, GroupTypeId: 7 },
+          ];
+        }
+        if (path.endsWith("/quizzes/")) return { Objects: [] };
+        throw notFound();
+      }),
+    };
+
+    const assignments = await fetchCourseAssignments(apiClient as any, COURSE_ID);
+
+    expect(assignments.map((a) => [a.id, (a as any).isGroup])).toEqual([
+      [55, false],
+      [56, true],
+    ]);
+  });
 });
 
 /**
