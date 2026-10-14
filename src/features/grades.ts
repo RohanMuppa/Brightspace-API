@@ -6,11 +6,14 @@
 
 import type { z } from "zod";
 import { DEFAULT_CACHE_TTLS, type D2LApiClient } from "../api/index.js";
+import { ApiError, isAuthUnavailable } from "../api/errors.js";
 import { fetchAllItems } from "../api/paginate.js";
+import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 import { GetMyGradesSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import { log } from "../utils/logger.js";
+import { gradebookUrl } from "../utils/deep-links.js";
 
 export type GetMyGradesArgs = z.input<typeof GetMyGradesSchema>;
 
@@ -25,10 +28,31 @@ export interface GradeItem {
   lastModified: string;
 }
 
+/**
+ * Why a course's grades could not be read in the all-courses form of
+ * `getMyGrades`. Present only on a course whose grade request failed; its
+ * `grades` is then `[]`, which means "unknown", never "no grades".
+ */
+export interface CourseGradesFailure {
+  /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
+  code: BrightspaceErrorCode;
+  /** The HTTP status Brightspace answered with, when it answered at all. */
+  status?: number;
+  /** The course's gradebook page, so a person can open the grades directly. */
+  gradeUrl: string;
+  /** A sentence saying the grades could not be read and what to do instead. */
+  notice: string;
+}
+
 export interface CourseGrades {
   courseId: number;
   courseName?: string;
   grades: GradeItem[];
+  /**
+   * Set only when this course's grades could not be read (all-courses form
+   * only). Absent on every course that was read successfully.
+   */
+  failed?: CourseGradesFailure;
 }
 
 interface GradeValue {
@@ -73,6 +97,24 @@ async function fetchGrades(api: D2LApiClient, courseId: number): Promise<GradeIt
     comments: gv.Comments?.Text || null,
     lastModified: gv.LastModified,
   }));
+}
+
+function failedCourse(baseUrl: string, courseId: number, courseName: string, error: unknown): CourseGrades {
+  const publicError = toPublicError(error);
+  const gradeUrl = gradebookUrl(baseUrl, courseId);
+  return {
+    courseId,
+    courseName,
+    grades: [],
+    failed: {
+      code: publicError.code,
+      ...(error instanceof ApiError ? { status: error.status } : {}),
+      gradeUrl,
+      notice:
+        `Grades for course ${courseId} could not be read from Brightspace, so its empty grades list ` +
+        `means unknown, not no grades. Open ${gradeUrl}, or call getMyGrades again with this courseId.`,
+    },
+  };
 }
 
 /** The caller's grade breakdown for a specific course, or every enrolled course. */
@@ -120,15 +162,34 @@ export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {
         log("DEBUG", `getMyGrades: 403 Forbidden for course ${item.OrgUnit.Id} (${item.OrgUnit.Name}) - skipping`);
         return null;
       }
-      throw error; // Re-throw other errors
+      // A session that cannot sign in fails the whole call, as in getAssignments.
+      if (isAuthUnavailable(error)) throw error;
+      // Anything else (a 404, a 5xx, a dropped connection) must not make the
+      // course vanish: the caller would read the array as every course's
+      // grades with one silently missing (brightspace-mcp-server#245).
+      log("DEBUG", `getMyGrades: grades unavailable for course ${item.OrgUnit.Id} (${item.OrgUnit.Name})`, error);
+      return failedCourse(ctx.config.baseUrl, item.OrgUnit.Id, item.OrgUnit.Name, error);
     }
   });
 
   const results = await Promise.allSettled(gradePromises);
-  const courses = results
-    .filter((r): r is PromiseFulfilledResult<CourseGrades> => r.status === "fulfilled" && r.value !== null)
-    .map((r) => r.value);
+  // A course that could not sign in is not a course with no grades.
+  const authFailure = results.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected" && isAuthUnavailable(r.reason),
+  );
+  if (authFailure) throw authFailure.reason;
+  const courses = results.flatMap((r, i) => {
+    if (r.status === "fulfilled") return r.value === null ? [] : [r.value];
+    // Defensive: the per-course catch above only rethrows auth failures.
+    const item = filteredEnrollments[i];
+    return [failedCourse(ctx.config.baseUrl, item.OrgUnit.Id, item.OrgUnit.Name, r.reason)];
+  });
+  const failedCount = courses.filter((c) => c.failed).length;
 
-  log("INFO", `getMyGrades: Retrieved grades for ${courses.length} courses (out of ${enrollmentItems.length} enrolled)`);
+  log(
+    "INFO",
+    `getMyGrades: Retrieved grades for ${courses.length - failedCount} courses` +
+      `${failedCount > 0 ? `, ${failedCount} failed` : ""} (out of ${enrollmentItems.length} enrolled)`,
+  );
   return courses;
 }

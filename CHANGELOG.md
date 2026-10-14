@@ -7,6 +7,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getMyGrades()` without a `courseId` (`brightspace grades`) silently dropped any course whose
+  grade request failed with anything other than a 403 — a 404, a 5xx, a dropped connection — so a
+  script read the array as every course's grades with one missing. Such a course now stays in the
+  array, in enrollment order, with `grades: []` and an additive `failed` field
+  (`CourseGradesFailure`: `code`, `status?`, `gradeUrl`, `notice`); `failed` is absent on every
+  course that was read, so the usual shape and the `CourseGrades[]` return type are unchanged. A
+  sign-in problem raised mid-batch (an unrecovered 401, a pending MFA sign-in, a failed token
+  refresh) used to drop the course the same way; it now fails the whole call with
+  `BrightspaceAuthExpiredError` / `BrightspaceMfaPendingError`, as `getAssignments` already does.
+  A 403 course is still skipped. Ported from
+  [RohanMuppa/brightspace-mcp-server#245](https://github.com/RohanMuppa/brightspace-mcp-server/issues/245)
+  (fixes [#48](https://github.com/RohanMuppa/Brightspace-API/issues/48)).
+
 - A dropbox folder that D2L sent without a `GroupTypeId` key was reported as a group assignment
   (`isGroup: true`), because only an explicit `null` counted as individual. A missing
   `GroupTypeId` now means an individual folder, the same as `null`. Ported from

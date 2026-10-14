@@ -205,6 +205,12 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getVideoTranscript(args)` | `GetVideoTranscriptArgs` — `courseId?`, `topicId?`, `videoUrl?`, `offset?` (default 0), `maxChars?` (default 12000) | `VideoTranscriptResult` |
 | `getInfo()` | — | `ClientInfo` |
 
+In the all-courses form of `getMyGrades` (no `courseId`), a course whose grades could not be
+read (a 404, a 5xx, a network error) stays in the array with `grades: []` and a `failed` field —
+`{ code, status?, gradeUrl, notice }` — so an empty list there means "unknown", not "no grades".
+`failed` is absent on every course that was read. A course answering 403 is still left out, and a
+sign-in problem still throws.
+
 Every argument and result type is exported from `brightspace-api`'s root entry point. The
 `api` property on the returned client (`client.api`, type `D2LApiClient`) is an escape hatch
 for making raw, authenticated D2L API calls the facade doesn't cover — it is not part of the
