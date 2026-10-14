@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { getMyGrades } from "../../src/features/grades.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
+import { ApiError, NetworkError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 
 /**
  * The all-courses branch of getMyGrades resolves its course list from the
@@ -117,5 +119,82 @@ describe("getMyGrades all-courses course resolution", () => {
     expect(result[0].courseId).toBe(COURSE_A.Id);
     expect(result[0].grades).toHaveLength(1);
     expect(requested.some((p) => p.includes("/enrollments/"))).toBe(false);
+  });
+});
+
+/**
+ * A course whose grade request fails with anything but a 403 used to vanish
+ * from the all-courses result, because the per-course promise rethrew and
+ * Promise.allSettled filtered the rejection out (brightspace-mcp-server#245).
+ */
+describe("getMyGrades all-courses failed courses", () => {
+  const twoCourses = {
+    Items: [COURSE_A, COURSE_B].map((course) => ({
+      OrgUnit: course,
+      Access: { ClasslistRoleName: "Student", IsActive: true, LastAccessed: null },
+    })),
+    PagingInfo: { HasMoreItems: false, Bookmark: "" },
+  };
+
+  function failingB(error: unknown) {
+    return setup((path) => {
+      if (path.includes("/enrollments/")) return twoCourses;
+      if (path.includes(`/${COURSE_A.Id}/grades/`)) return [grade("Exam 1")];
+      if (path.includes(`/${COURSE_B.Id}/grades/`)) throw error;
+      return [];
+    });
+  }
+
+  it.each([
+    ["a 404", new ApiError(404, "/grades", "missing"), "BRIGHTSPACE_NOT_FOUND", 404],
+    ["a 500", new ApiError(500, "/grades", "boom"), "BRIGHTSPACE_API_ERROR", 500],
+    ["a network error", new NetworkError("socket hang up"), "BRIGHTSPACE_NETWORK", undefined],
+  ])("keeps a course whose grades fail with %s and marks it failed", async (_label, error, code, status) => {
+    const { ctx } = failingB(error);
+
+    const result = await getMyGrades(ctx);
+    expect(result.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+
+    const [a, b] = result;
+    expect(a.grades).toHaveLength(1);
+    expect(a).not.toHaveProperty("failed");
+
+    expect(b.courseName).toBe(COURSE_B.Name);
+    expect(b.grades).toEqual([]);
+    const gradeUrl = `https://brightspace.example.edu/d2l/lms/grades/my_grades/main.d2l?ou=${COURSE_B.Id}`;
+    expect(b.failed).toEqual({
+      code,
+      ...(status === undefined ? {} : { status }),
+      gradeUrl,
+      notice: expect.stringContaining(gradeUrl),
+    });
+    expect(b.failed?.notice).toContain("not no grades");
+  });
+
+  it("leaves every course unmarked when nothing failed", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return twoCourses;
+      return [grade("Exam 1")];
+    });
+
+    const result = await getMyGrades(ctx);
+    expect(result).toHaveLength(2);
+    for (const course of result) expect(course).not.toHaveProperty("failed");
+  });
+
+  it("still skips a 403 course without marking it", async () => {
+    const { ctx } = failingB(new ApiError(403, "/grades", "forbidden"));
+
+    const result = await getMyGrades(ctx);
+    expect(result.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+  });
+
+  it.each([
+    ["an unrecovered 401", new ApiError(401, "/grades", "expired")],
+    ["a pending MFA sign-in", new AuthProcessError("mfaPending", "MFA approval pending")],
+  ])("throws instead of reporting a course when %s", async (_label, error) => {
+    const { ctx } = failingB(error);
+
+    await expect(getMyGrades(ctx)).rejects.toBe(error);
   });
 });

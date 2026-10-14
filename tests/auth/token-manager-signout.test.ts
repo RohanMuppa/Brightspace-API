@@ -204,13 +204,17 @@ describe("TokenManager notices a deleted or replaced saved session", () => {
     });
 
     it("is true when the replacement session is not usable yet (expired), so the old cache is not trusted", async () => {
-      const proc = startProcess();
+      // The expired token carries a cookie, so getToken tries a mint; stub it
+      // with what a live tenant says for a dead cookie, so the test stays offline.
+      const mint = vi.fn<MintFn>(async () => ({ ok: false, reason: "sessionExpired" }) as const);
+      const proc = startProcess({ mint });
       await proc.setToken(withCookie("alice-token-12345678", "d2lSessionVal=alice"));
       await fs.unlink(sessionPath);
       await other.save(withCookie("bob-expired-1234567", "d2lSessionVal=bob", { expiresAt: Date.now() - 1000 }));
 
       expect(await proc.sessionChanged()).toBe(true);
       expect(await proc.getToken()).toBeNull();
+      expect(mint).toHaveBeenCalledTimes(1);
     });
 
     it("never touches the disk on a cold start", async () => {

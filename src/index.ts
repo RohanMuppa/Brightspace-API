@@ -10,7 +10,7 @@ export * from "./errors.js";
 export type { AppConfig, TokenData } from "./types/index.js";
 
 export type { Course, GetMyCoursesArgs } from "./features/courses.js";
-export type { GetMyGradesArgs, GradeItem, CourseGrades } from "./features/grades.js";
+export type { GetMyGradesArgs, GradeItem, CourseGrades, CourseGradesFailure } from "./features/grades.js";
 export type { GetUpcomingDueDatesArgs, UpcomingItem } from "./features/due-dates.js";
 export type { ClientInfo } from "./features/info.js";
 export type {
