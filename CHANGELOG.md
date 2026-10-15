@@ -7,6 +7,12 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getSyllabus()` read the attachment's name from `Content-Disposition` with its own regex, which
+  did not understand the RFC 5987 `filename*=UTF-8''…` form, so with `downloadPath` set a syllabus
+  sent as `filename*=UTF-8''Course%20Syllabus.pdf` was saved as `UTF-8Course%20Syllabus.pdf`. It now
+  uses the shared `parseContentDispositionFilename`, as `downloadFile()` already does. Ported from
+  [RohanMuppa/brightspace-mcp-server#247](https://github.com/RohanMuppa/brightspace-mcp-server/issues/247).
+
 - `getMyGrades()` without a `courseId` (`brightspace grades`) silently dropped any course whose
   grade request failed with anything other than a 403 — a 404, a 5xx, a dropped connection — so a
   script read the array as every course's grades with one missing. Such a course now stays in the

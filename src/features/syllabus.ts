@@ -17,6 +17,7 @@ import { secureDownload, readBodyCapped } from "../utils/download-helpers.js";
 import { DownloadError } from "../utils/download-errors.js";
 import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 import { log } from "../utils/logger.js";
+import { parseContentDispositionFilename } from "./download.js";
 
 export type GetSyllabusArgs = z.input<typeof GetSyllabusSchema>;
 
@@ -120,10 +121,8 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
       } else {
         // Get filename from Content-Disposition header.
         const disposition = response.headers.get("Content-Disposition") ?? "";
-        const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (match?.[1]) {
-          attachmentFilename = match[1].replace(/['"]/g, "");
-        }
+        const parsed = parseContentDispositionFilename(disposition);
+        if (parsed) attachmentFilename = parsed;
 
         // Capped read: Content-Length can be missing or understated.
         try {

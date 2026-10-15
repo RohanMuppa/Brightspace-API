@@ -182,6 +182,19 @@ describe("getSyllabus downloadPath", () => {
     expect(await fs.readFile(path.join(targetDir, "syllabus.pdf"))).toEqual(pdf);
   });
 
+  it("decodes an RFC 5987 filename* attachment name when saving", async () => {
+    const pdf = minimalPdf("Grading is 40 percent exams");
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { "Content-Disposition": "attachment; filename*=UTF-8''Course%20Syllabus.pdf" }, body: pdf },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir });
+
+    expect(result.download?.filePath).toBe(path.join(targetDir, "Course Syllabus.pdf"));
+    expect(await fs.readFile(path.join(targetDir, "Course Syllabus.pdf"))).toEqual(pdf);
+  });
+
   it("does not write outside the download directory for a path-traversal Content-Disposition filename", async () => {
     const pdf = minimalPdf("irrelevant");
     const { ctx } = setup({
