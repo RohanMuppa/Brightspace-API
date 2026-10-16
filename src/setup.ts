@@ -17,7 +17,8 @@ import {
   loadConfigStore,
 } from "./utils/config-store.js";
 import { saveSecureConfig } from "./utils/secure-config.js";
-import { normalizeTotpEnrollment } from "./auth/totp.js";
+import { deleteStoredTotpUri, getStoredTotpUri } from "./auth/credential-store.js";
+import { askShortcutQuestion, type ShortcutIO } from "./utils/two-factor-shortcuts.js";
 import type { ConfigStoreData } from "./utils/config-store.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
 import { applyPasswordInput, INITIAL_PASSWORD_INPUT } from "./utils/password-input.js";
@@ -412,30 +413,8 @@ async function main(): Promise<void> {
     console.log("");
   }
 
-  // ── Step 4b: Authenticator enrollment (hidden, optional) ──────────
-  // Opt-in and off by default. Asked without naming a school: whether a code
-  // can be typed depends on the identity provider and the challenge it
-  // shows, which is only known at sign-in time.
-  console.log(dim("  Optional. If your school asks for a 6-digit code from an authenticator app, this computer can generate it"));
-  console.log(dim("  for you, so automatic sign-ins need nothing from your phone. Paste the SETUP KEY (or otpauth:// link) you"));
-  console.log(dim("  got when enrolling the app — a code showing on screen right now will not work."));
-  console.log(dim("  The tradeoff: the key is stored beside your password, so on THIS computer the two factors become one."));
-  console.log(dim("  It still stops anyone who only has your password. Press Enter to skip, or to keep a key you saved before."));
-  let totpUri: string | undefined;
-  while (true) {
-    const input = await askPassword("  Authenticator setup key or otpauth:// link (optional): ");
-    if (!input) break;
-    try {
-      totpUri = normalizeTotpEnrollment(input, username);
-      break;
-    } catch {
-      console.log(yellow("  That is not a setup key or otpauth:// link. Paste the enrollment key, or press Enter to skip."));
-    }
-  }
-  console.log("");
-
-  // Re-open readline for the remaining prompt
-  const rl2 = readline.createInterface({
+  // Re-open readline for the remaining prompts
+  let rl2 = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
@@ -472,27 +451,44 @@ async function main(): Promise<void> {
     : "  A browser window will open when authentication is needed."));
   console.log("");
 
-  // ── Step 6: Remember this device for MFA ──────────────────────────
-  // Opt-in only: a shared computer must never skip MFA unless asked to.
+  // ── Step 6: How often to approve (the one 2FA question) ───────────
+  // Opt-in only: the default asks every time, and a shared computer must never
+  // skip MFA unless asked to. Asked for every school and mode today; the
+  // sign-in flow itself decides at run time whether a code can be typed.
   let savedRememberMfa: boolean | undefined;
   try {
     savedRememberMfa = configStoreExists() ? loadConfigStore().rememberMfa : undefined;
   } catch {
     // An invalid old config is replaced by the setup values below.
   }
-  const defaultRememberMfa = savedRememberMfa === true ? "yes" : "no";
-  let rememberMfaAnswer = "";
-  while (!/^(y(es)?|no?)$/i.test(rememberMfaAnswer)) {
-    rememberMfaAnswer = await ask(
-      rl2,
-      `  Remember this device so later sign-ins can skip the second factor? Not for shared computers. (yes/no) [${defaultRememberMfa}]: `,
-    ) || defaultRememberMfa;
-    if (!/^(y(es)?|no?)$/i.test(rememberMfaAnswer)) console.log(yellow("  Please enter yes or no."));
+  let keySaved = false;
+  try {
+    keySaved = Boolean(await getStoredTotpUri(baseUrl, username));
+  } catch {
+    // An unreadable credential store means there is nothing we can offer to remove.
   }
-  const rememberMfa = /^y/i.test(rememberMfaAnswer);
-  console.log(dim(rememberMfa
-    ? "  Later sign-ins will ask Microsoft not to repeat the second factor on this device."
-    : "  Every sign-in will ask for the second factor."));
+  const toneOf = { plain: (l: string) => l, dim, warn: yellow };
+  const shortcutIO: ShortcutIO = {
+    ask: (prompt) => ask(rl2, prompt),
+    // The hidden prompt manages its own readline, so the shared one steps aside.
+    async askSecret(prompt) {
+      rl2.close();
+      try {
+        return await askPassword(prompt);
+      } finally {
+        rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+      }
+    },
+    print: (line, tone = "plain") => console.log(toneOf[tone](line)),
+  };
+  const shortcuts = await askShortcutQuestion(shortcutIO, {
+    username,
+    rememberMfa: savedRememberMfa === true,
+    keySaved,
+    savedConfig: savedRememberMfa !== undefined || keySaved || savedHeadless !== undefined,
+  });
+  const rememberMfa = shortcuts?.rememberMfa;
+  const totpUri = shortcuts?.totpUri;
   console.log("");
 
   // ── Step 7: Save config ──────────────────────────────────────────
@@ -512,6 +508,14 @@ async function main(): Promise<void> {
     ? "  No password saved: each sign-in will wait for your phone approval."
     : "  Password saved in your operating system credential store."));
   if (totpUri) console.log(green("  Authenticator enrollment saved in your operating system credential store."));
+  if (shortcuts?.removeKey) {
+    try {
+      await deleteStoredTotpUri(baseUrl, username);
+      console.log(green("  Saved authenticator key removed from your operating system credential store."));
+    } catch {
+      console.log(yellow("  Could not remove the saved authenticator key. Delete the brightspace-api entries from your computer's password store."));
+    }
+  }
   console.log(green("  Config saved to: " + getConfigStorePath()));
   console.log("");
 

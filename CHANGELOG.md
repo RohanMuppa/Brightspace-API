@@ -5,6 +5,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Added
+
+- `setup` asked the two opt-in ways to be asked for 2FA less often (an authenticator setup key,
+  then a separate "remember this device" yes/no) as two unrelated-looking prompts at different
+  points in the wizard. They are now one multiple-choice question, "How often do you want to
+  approve sign-ins on your phone?", asked right after the MFA method choice; picking 1, 2, or 3
+  turns the shortcuts on or off together and, on a rerun, shows what is currently on as the
+  default. Picking 1 or 2 while a key is saved now offers to remove it from the credential store.
+  The wording is shared from the new `src/utils/two-factor-shortcuts.ts`. Ported from
+  [RohanMuppa/brightspace-mcp-server#254](https://github.com/RohanMuppa/brightspace-mcp-server/pull/254)
+  (fixes [#52](https://github.com/RohanMuppa/Brightspace-API/issues/52)).
+
 ### Fixed
 
 - `getSyllabus()` read the attachment's name from `Content-Disposition` with its own regex, which
