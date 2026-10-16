@@ -7,6 +7,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- The README's Configuration table, the list of settings the client reads, left out
+  `D2L_PASSWORD` and `D2L_TOTP_SECRET`, and said the password is never in an environment variable
+  although `D2L_PASSWORD` is copied into the credential store at startup. Both are now listed with
+  what they do, along with the `.env` file and the accepted on/off values, and
+  `tests/release/env-docs.test.ts` fails if `src/` reads a `D2L_*` variable the table does not
+  name. Ported from
+  [RohanMuppa/brightspace-mcp-server#252](https://github.com/RohanMuppa/brightspace-mcp-server/issues/252).
+
 - `getSyllabus()` read the attachment's name from `Content-Disposition` with its own regex, which
   did not understand the RFC 5987 `filename*=UTF-8''…` form, so with `downloadPath` set a syllabus
   sent as `filename*=UTF-8''Course%20Syllabus.pdf` was saved as `UTF-8Course%20Syllabus.pdf`. It now
