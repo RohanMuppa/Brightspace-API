@@ -170,3 +170,16 @@ describe("saved settings on a repeat run", () => {
     });
   });
 });
+
+describe("2FA shortcuts: setup wizard wiring", () => {
+  it("asks the one question through setup.ts, and the old two prompts are gone", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const setupPath = fileURLToPath(new URL("../../src/setup.ts", import.meta.url));
+    const setup = readFileSync(setupPath, "utf-8");
+    expect(setup).toContain("askShortcutQuestion");
+    expect(setup).not.toContain("Remember this device so later sign-ins");
+    expect(setup).not.toContain("Authenticator setup key or otpauth:// link (optional)");
+    expect(setup).not.toContain("Step 4b: Authenticator enrollment");
+  });
+});
