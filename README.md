@@ -256,9 +256,21 @@ The client reads the same configuration as `brightspace-mcp-server`, resolved in
 | Include only these course IDs | `D2L_INCLUDE_COURSES` (comma-separated) | `includeCourses` | — |
 | Exclude these course IDs | `D2L_EXCLUDE_COURSES` (comma-separated) | `excludeCourses` | — |
 | Campus (SUNY) | `D2L_CAMPUS` | `campus` | — |
+| Password | `D2L_PASSWORD` | — | — |
+| Authenticator enrollment (Microsoft Entra only) | `D2L_TOTP_SECRET` | — | — |
+
+A `.env` file in the working directory is loaded too. On/off settings accept `true`/`false`,
+`1`/`0`, `yes`/`no` or `on`/`off`; any other value, or a `D2L_TOKEN_TTL` that is not a whole
+positive number of seconds, is ignored with a `[config]` warning and the next source applies.
+`tests/release/env-docs.test.ts` fails if `src/` reads a `D2L_*` variable this table does not name.
 
 The saved password lives in the OS credential store (macOS Keychain, Windows Credential
-Manager, Linux Secret Service), never in `config.json` or an environment variable. A script
+Manager, Linux Secret Service), never in `config.json`. `D2L_PASSWORD`, when set alongside a
+username, is copied into that store for the account at startup and never written to a file; it
+is ignored when passwordless sign-in is on. `D2L_TOTP_SECRET` takes an authenticator setup key
+or `otpauth://` link so sign-in can answer an Entra verification-code challenge itself, in place
+of the per-account credential-store entry `brightspace setup` saves. It exists for CI and
+containers with no keyring and is weaker than that entry, so prefer `setup` elsewhere. A script
 can also skip config-file/env resolution entirely by passing a fully-built `AppConfig` as
 `createBrightspaceClient({ config })` — there is no `password` option; credentials never enter
 through the client's options.
