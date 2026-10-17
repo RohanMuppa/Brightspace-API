@@ -364,6 +364,43 @@ export class D2LApiClient {
     return null;
   }
 
+  /**
+   * Like getPage, but returns the raw Response instead of decoded text, so a
+   * binary body (a course file reached through a quickLink) is not corrupted
+   * by text decoding. Same cookie and same-origin rules as getPage: no login
+   * is attempted, and a redirect — same-origin or not — comes back as null
+   * rather than being followed, since a course file is served directly and a
+   * redirect here only ever means a dead session or a moved link.
+   */
+  async getPageRaw(path: string): Promise<Response | null> {
+    const origin = new URL(this.baseUrl).origin;
+    let target: URL;
+    try {
+      target = new URL(path, origin);
+    } catch {
+      return null;
+    }
+    if (target.origin !== origin || target.username || target.password) return null;
+    if (target.pathname === "/d2l/login") return null;
+
+    const token = await this.tokenManager.getToken();
+    if (!token?.cookieHeader) return null;
+    const headers = this.buildAuthHeaders({ ...token, accessToken: `cookie:${token.cookieHeader}` });
+
+    const current = `${target.pathname}${target.search}`;
+    const response = await this.retrying(() => this.throttled(() => this.makePageRequest(current, headers)));
+    if (response.status === 401 || (response.status >= 300 && response.status < 400)) return null;
+    if (!response.ok) throw new ApiError(response.status, stripSessionParams(current), await response.text());
+
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+    if (contentType.startsWith("text/html")) {
+      const body = await response.text();
+      if (isExpiredSessionRedirect(body, this.baseUrl)) return null;
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    }
+    return response;
+  }
+
   /** One page request, redirects left unfollowed. Throws only what retrying() retries. */
   private async makePageRequest(path: string, headers: Record<string, string>): Promise<Response> {
     const publicPath = stripSessionParams(path);

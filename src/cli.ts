@@ -133,10 +133,11 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   download: {
     usage:
-      "download --course ID (--topic ID | --folder ID --file ID | --news ID --file ID) --dir PATH [--name NAME]   downloadFile",
+      "download --course ID (--topic ID | --course-path PATH | --folder ID --file ID | --news ID --file ID) --dir PATH [--name NAME]   downloadFile",
     options: {
       course: { type: "string" },
       topic: { type: "string" },
+      "course-path": { type: "string" },
       folder: { type: "string" },
       file: { type: "string" },
       news: { type: "string" },
@@ -147,6 +148,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       c.downloadFile({
         courseId: num(v, "course") as number,
         topicId: num(v, "topic"),
+        coursePath: str(v, "course-path"),
         folderId: num(v, "folder"),
         fileId: num(v, "file"),
         newsId: num(v, "news"),
