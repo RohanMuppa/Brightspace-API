@@ -175,3 +175,73 @@ describe("D2LApiClient.getPage", () => {
     expect((error as ApiError).message).toContain("ou=101");
   });
 });
+
+describe("D2LApiClient.getPageRaw", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const pdf = () =>
+    new Response(Buffer.from("%PDF-1.4 body"), { status: 200, headers: { "content-type": "application/pdf" } });
+
+  it("returns the binary response, sending the session cookie and no Bearer token", async () => {
+    const { client, fetchMock } = makeClient(browserToken());
+    fetchMock.mockResolvedValue(pdf());
+
+    const response = await client.getPageRaw(
+      "/d2l/common/dialogs/quickLink/quickLink.d2l?ou=101&type=coursefile&fileId=Notes%2Fa.pdf"
+    );
+
+    expect(Buffer.from(await response!.arrayBuffer()).toString()).toBe("%PDF-1.4 body");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      `${BASE}/d2l/common/dialogs/quickLink/quickLink.d2l?ou=101&type=coursefile&fileId=Notes%2Fa.pdf`
+    );
+    expect(init.headers.Cookie).toBe(SESSION_COOKIE);
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(init.redirect).toBe("manual");
+  });
+
+  it("returns null without a request when no session cookie is stored", async () => {
+    const { client, fetchMock } = makeClient(browserToken({ cookieHeader: undefined }));
+
+    expect(await client.getPageRaw("/d2l/le/content/101/Notes/a.pdf")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns null on the login redirect stub instead of handing back the stub as a file", async () => {
+    const { client, fetchMock, onAuthExpired } = makeClient(browserToken());
+    fetchMock.mockResolvedValue(html(EXPIRED_STUB));
+
+    expect(await client.getPageRaw("/d2l/le/content/101/Notes/a.pdf")).toBeNull();
+    expect(onAuthExpired).not.toHaveBeenCalled();
+  });
+
+  it("returns null on a redirect instead of following it", async () => {
+    const { client, fetchMock } = makeClient(browserToken());
+    fetchMock.mockResolvedValueOnce(redirect("/d2l/login?sessionExpired=1"));
+
+    expect(await client.getPageRaw("/d2l/le/content/101/Notes/a.pdf")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null on a 401 without retrying as a login", async () => {
+    const { client, fetchMock, onAuthExpired } = makeClient(browserToken());
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+
+    expect(await client.getPageRaw("/d2l/le/content/101/Notes/a.pdf")).toBeNull();
+    expect(onAuthExpired).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://evil.example.com/d2l/le/content/101/Notes/a.pdf",
+    "//evil.example.com/d2l/le/content/101/Notes/a.pdf",
+    "http://purdue.brightspace.com/d2l/le/content/101/Notes/a.pdf",
+    "https://user:pw@purdue.brightspace.com/d2l/home",
+  ])("never sends a request to another origin for %s", async target => {
+    const { client, fetchMock } = makeClient(browserToken());
+
+    expect(await client.getPageRaw(target)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

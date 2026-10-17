@@ -7,6 +7,15 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- `downloadFile()` can now fetch a file an instructor linked by path inside a module description
+  instead of adding as a content topic, via the new `coursePath` argument (a course file path such
+  as `Notes/Lecture 1.pdf`, or the `quickLink.d2l?...type=coursefile` URL). `get_course_content`'s
+  modules now carry `courseFiles`, the paths to pass. `coursePath` fetches through the saved
+  session cookie (a new `D2LApiClient.getPageRaw()`), so it needs a signed-in browser session; the
+  CLI's `download` command gained a matching `--course-path` flag. Ported from
+  [RohanMuppa/brightspace-mcp-server#259](https://github.com/RohanMuppa/brightspace-mcp-server/pull/259)
+  (fixes [#54](https://github.com/RohanMuppa/Brightspace-API/issues/54)).
+
 - `setup` asked the two opt-in ways to be asked for 2FA less often (an authenticator setup key,
   then a separate "remember this device" yes/no) as two unrelated-looking prompts at different
   points in the wizard. They are now one multiple-choice question, "How often do you want to

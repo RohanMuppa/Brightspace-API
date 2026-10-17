@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { downloadFile, parseContentDispositionFilename } from "../../src/features/download.js";
 import type { FeatureContext } from "../../src/features/context.js";
-import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
+import { BrightspaceAuthExpiredError, BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
 
 /**
  * download_file had no test of its own. Both of the things it gets from the
@@ -33,6 +33,8 @@ interface Setup {
   /** Content-Length header on the raw download. */
   contentLength?: number;
   body?: Buffer | ReadableStream<Uint8Array>;
+  /** Pass null to simulate no stored session cookie for getPageRaw. */
+  pageResponse?: null;
 }
 
 /**
@@ -51,8 +53,9 @@ function largePdfStream(megabytes: number): ReadableStream<Uint8Array> {
   });
 }
 
-function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer() }: Setup) {
+function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer(), pageResponse }: Setup) {
   const rawRequested: string[] = [];
+  const pageRequested: string[] = [];
 
   const api = {
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
@@ -67,10 +70,20 @@ function setup({ disposition, submissions, newsItem, contentLength, body = pdfBu
         },
       });
     }),
+    getPageRaw: vi.fn(async (p: string) => {
+      pageRequested.push(p);
+      if (pageResponse === null) return null;
+      return new Response(body instanceof Buffer ? toArrayBuffer(body) : body, {
+        status: 200,
+        headers: {
+          ...(disposition ? { "Content-Disposition": disposition } : {}),
+        },
+      });
+    }),
   };
 
   const ctx = { api, config: {} as any, version: "0.0.0-test" } as unknown as FeatureContext;
-  return { ctx, rawRequested };
+  return { ctx, rawRequested, pageRequested };
 }
 
 let root: string;
@@ -446,5 +459,106 @@ describe("downloadFile: downloadPath validation", () => {
 
     expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
     expect(error.message).toMatch(/not a directory/i);
+  });
+});
+
+describe("downloadFile: course file links (coursePath)", () => {
+  const QUICKLINK = (id: number, file: string) =>
+    `/d2l/common/dialogs/quickLink/quickLink.d2l?ou=${id}&type=coursefile&fileId=${encodeURIComponent(file)}`;
+
+  it("fetches a course file by its path through the cookie-authenticated quickLink and saves it", async () => {
+    const { ctx, pageRequested, rawRequested } = setup({ disposition: 'attachment; filename="Lecture01.pdf"' });
+
+    const result = await downloadFile(ctx, { courseId: COURSE, coursePath: "Notes/Lecture01.pdf", downloadPath: targetDir });
+
+    expect(pageRequested).toEqual([QUICKLINK(COURSE, "Notes/Lecture01.pdf")]);
+    expect(rawRequested).toEqual([]);
+    expect(result.filePath).toBe(path.join(targetDir, "Lecture01.pdf"));
+  });
+
+  it("accepts the quickLink URL a module description carries and resolves the same file", async () => {
+    const { ctx, pageRequested } = setup({});
+    const link = `/d2l/common/dialogs/quickLink/quickLink.d2l?ou=${COURSE}&type=coursefile&fileId=Notes%2fLecture01.pdf`;
+
+    await downloadFile(ctx, { courseId: COURSE, coursePath: link, downloadPath: targetDir });
+
+    expect(pageRequested).toEqual([QUICKLINK(COURSE, "Notes/Lecture01.pdf")]);
+  });
+
+  it("falls back to the path's own filename when there is no Content-Disposition", async () => {
+    const { ctx } = setup({});
+
+    const result = await downloadFile(ctx, { courseId: COURSE, coursePath: "Notes/x.pdf", downloadPath: targetDir });
+
+    expect(result.originalFilename).toBe("x.pdf");
+  });
+
+  it("honours customFilename", async () => {
+    const { ctx } = setup({});
+
+    const result = await downloadFile(ctx, {
+      courseId: COURSE,
+      coursePath: "Notes/x.pdf",
+      downloadPath: targetDir,
+      customFilename: "Lecture 1 - Intro.pdf",
+    });
+
+    expect(path.basename(result.filePath)).toBe("Lecture 1 - Intro.pdf");
+  });
+
+  it.each(["../secret.pdf", "Notes/../../secret.pdf", "/etc/passwd", "https://evil.example/a.pdf", "Notes\\..\\a.pdf"])(
+    "refuses the path %s without sending a request",
+    async coursePath => {
+      const { ctx, pageRequested } = setup({});
+
+      const error: Error = await downloadFile(ctx, { courseId: COURSE, coursePath, downloadPath: targetDir }).catch(
+        (e) => e
+      );
+
+      expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+      expect(pageRequested).toEqual([]);
+    }
+  );
+
+  it("explains that the session cookie is missing instead of reporting a bare failure", async () => {
+    const { ctx } = setup({ pageResponse: null });
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      coursePath: "Notes/x.pdf",
+      downloadPath: targetDir,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceAuthExpiredError);
+    expect(error.message).toMatch(/sign in|re-authenticate|session cookie/i);
+  });
+
+  it("cannot be combined with topicId", async () => {
+    const { ctx, pageRequested } = setup({});
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      coursePath: "Notes/x.pdf",
+      topicId: 5,
+      downloadPath: targetDir,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(pageRequested).toEqual([]);
+  });
+
+  it("cannot be combined with folderId/fileId", async () => {
+    const { ctx, pageRequested } = setup({});
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      coursePath: "Notes/x.pdf",
+      folderId: 5,
+      fileId: 1,
+      downloadPath: targetDir,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(pageRequested).toEqual([]);
   });
 });

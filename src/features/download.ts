@@ -15,7 +15,9 @@ import { log } from "../utils/logger.js";
 // look as though this module validated anything itself.
 import { DownloadError } from "../utils/download-errors.js";
 import { secureStreamDownload } from "../utils/download-helpers.js";
-import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
+import { AUTH_COMMAND } from "../utils/commands.js";
+import { parseCoursePath, QUICKLINK_PATH } from "../utils/course-files.js";
+import { BrightspaceAuthExpiredError, BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
 
 export type DownloadFileArgs = z.input<typeof DownloadFileSchema>;
 
@@ -112,8 +114,14 @@ async function finishDownload(
  * announcement's attachments, to a local directory.
  */
 export async function downloadFile(ctx: FeatureContext, args: DownloadFileArgs): Promise<DownloadResult> {
-  const { courseId, topicId, folderId, newsId, fileId, downloadPath, customFilename } =
+  const { courseId, topicId, coursePath, folderId, newsId, fileId, downloadPath, customFilename } =
     DownloadFileSchema.parse(args);
+
+  if (coursePath !== undefined && (topicId !== undefined || folderId !== undefined || newsId !== undefined || fileId !== undefined)) {
+    throw new BrightspaceInvalidArgumentError(
+      ["coursePath cannot be combined with topicId, folderId, newsId, or fileId"]
+    );
+  }
 
   if (!path.isAbsolute(downloadPath)) {
     throw new BrightspaceInvalidArgumentError(
@@ -138,7 +146,13 @@ export async function downloadFile(ctx: FeatureContext, args: DownloadFileArgs):
     );
   }
 
-  if (topicId !== undefined) {
+  if (coursePath !== undefined) {
+    const filePath = parseCoursePath(coursePath, courseId);
+    if (typeof filePath !== "string") {
+      throw new BrightspaceInvalidArgumentError(["coursePath: " + filePath.error], filePath.error);
+    }
+    return downloadCourseFile(ctx, courseId, filePath, downloadPath, customFilename);
+  } else if (topicId !== undefined) {
     return downloadContentFile(ctx, courseId, topicId, downloadPath, customFilename);
   } else if (folderId !== undefined && fileId !== undefined) {
     return downloadSubmissionFile(ctx, courseId, folderId, fileId, downloadPath, customFilename);
@@ -147,9 +161,38 @@ export async function downloadFile(ctx: FeatureContext, args: DownloadFileArgs):
   }
 
   throw new BrightspaceInvalidArgumentError(
-    ["topicId | folderId+fileId | newsId+fileId"],
-    "Either topicId (for content files), both folderId and fileId (for submission files), or both newsId and fileId (for announcement attachments) must be provided"
+    ["topicId | coursePath | folderId+fileId | newsId+fileId"],
+    "Either topicId (for content files), coursePath (for a file linked inside a module description), both folderId and fileId (for submission files), or both newsId and fileId (for announcement attachments) must be provided"
   );
+}
+
+/**
+ * Download a file from the course file store. Instructors often link these
+ * from a module description instead of adding them as content topics, so
+ * they carry no topicId. Brightspace serves them to the signed-in web
+ * session, not the API token, so this goes through the session cookie.
+ */
+async function downloadCourseFile(
+  ctx: FeatureContext,
+  courseId: number,
+  filePath: string,
+  downloadPath: string,
+  customFilename?: string
+): Promise<DownloadResult> {
+  log("INFO", `Downloading course file: courseId=${courseId}, path=${filePath}`);
+
+  const response = await ctx.api.getPageRaw(
+    `${QUICKLINK_PATH}?ou=${courseId}&type=coursefile&fileId=${encodeURIComponent(filePath)}`
+  );
+  if (!response) {
+    throw new BrightspaceAuthExpiredError(
+      `Could not fetch this course file: no usable Brightspace session cookie. Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to sign in, then retry.`
+    );
+  }
+
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = parseContentDispositionFilename(disposition) ?? filePath.split("/").pop() ?? "download";
+  return finishDownload(response, filename, downloadPath, customFilename, "Course file");
 }
 
 /**

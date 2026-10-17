@@ -150,6 +150,13 @@ describe("brightspace CLI argv parsing", () => {
     expect(downloadFile).toHaveBeenCalledWith({ courseId: 7, folderId: 11, fileId: 3, downloadPath: "/tmp/out" });
   });
 
+  it("download --course-path PATH maps to coursePath", async () => {
+    const downloadFile = vi.fn(async () => ({ success: true }));
+    const { deps } = makeDeps({ downloadFile });
+    await main(["download", "--course", "7", "--course-path", "Notes/Lecture 1.pdf", "--dir", "/tmp/out"], deps);
+    expect(downloadFile).toHaveBeenCalledWith({ courseId: 7, coursePath: "Notes/Lecture 1.pdf", downloadPath: "/tmp/out" });
+  });
+
   it("transcript --course ID --topic ID (or --url URL) maps to getVideoTranscript", async () => {
     const getVideoTranscript = vi.fn(async () => ({}));
     const { deps } = makeDeps({ getVideoTranscript });

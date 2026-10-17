@@ -150,7 +150,7 @@ method's JSON result to stdout, and exits `0`.
 | `brightspace discussions --course ID [--forum ID] [--topic ID]` | `getDiscussions` |
 | `brightspace roster --course ID [--limit N]` | `getRoster` |
 | `brightspace emails --course ID` | `getClasslistEmails` |
-| `brightspace download --course ID (--topic ID \| --folder ID --file ID \| --news ID --file ID) --dir PATH [--name NAME]` | `downloadFile` |
+| `brightspace download --course ID (--topic ID \| --course-path PATH \| --folder ID --file ID \| --news ID --file ID) --dir PATH [--name NAME]` | `downloadFile` |
 | `brightspace transcript --course ID --topic ID` (or `--url URL`) | `getVideoTranscript` |
 | `brightspace info` | `getInfo` |
 | `brightspace auth` | sign in once (opens the MFA flow); same as `brightspace-auth` |
@@ -194,7 +194,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `CourseGrades[]` |
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
-| `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
+| `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` |
