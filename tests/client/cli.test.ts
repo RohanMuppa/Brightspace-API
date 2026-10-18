@@ -49,6 +49,25 @@ describe("brightspace CLI argv parsing", () => {
     expect(getUpcomingDueDates).toHaveBeenCalledWith({ daysAhead: 3, courseId: 42 });
   });
 
+  it("due keeps stdout a bare array and writes failedCourses to stderr", async () => {
+    const failure = { courseId: 202, courseName: "MA 261", sources: ["quizzes"], code: "BRIGHTSPACE_API_ERROR", status: 500, notice: "n" };
+    const items = Object.assign([{ id: 1 }], { failedCourses: [failure] });
+    const getUpcomingDueDates = vi.fn(async () => items as never);
+    const { deps, stdout, stderr } = makeDeps({ getUpcomingDueDates });
+
+    expect(await main(["due"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([{ id: 1 }])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ failedCourses: [failure] })}\n`]);
+  });
+
+  it("due writes nothing to stderr when no course failed", async () => {
+    const getUpcomingDueDates = vi.fn(async () => [{ id: 1 }] as never);
+    const { deps, stderr } = makeDeps({ getUpcomingDueDates });
+
+    expect(await main(["due"], deps)).toBe(0);
+    expect(stderr).toEqual([]);
+  });
+
   it("grades [--course ID] maps to getMyGrades", async () => {
     const getMyGrades = vi.fn(async () => []);
     const { deps } = makeDeps({ getMyGrades });

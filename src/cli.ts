@@ -188,6 +188,19 @@ function writeError(deps: CliDeps, error: BrightspaceError): number {
   return EXIT_CODES[error.code] ?? 1;
 }
 
+/**
+ * `getUpcomingDueDates` names courses it could not read in a `failedCourses`
+ * property on the array, which JSON.stringify drops. stdout stays the bare
+ * array so `| jq '.[]'` keeps working; the failures go to stderr as one JSON
+ * line, so a missing course is never read as "nothing due".
+ */
+function writeFailedCourses(deps: CliDeps, result: unknown): void {
+  const failedCourses = Array.isArray(result) ? (result as { failedCourses?: unknown[] }).failedCourses : undefined;
+  if (failedCourses && failedCourses.length > 0) {
+    deps.stderr.write(`${JSON.stringify({ failedCourses })}\n`);
+  }
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -249,6 +262,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     const client = await deps.createClient(clientOptions);
     const result = await command.run(client, values);
     deps.stdout.write(`${JSON.stringify(result)}\n`);
+    writeFailedCourses(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

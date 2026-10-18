@@ -6,9 +6,10 @@
 
 import type { z } from "zod";
 import { DEFAULT_CACHE_TTLS, type D2LApiClient } from "../api/index.js";
+import { ApiError, isAuthUnavailable } from "../api/errors.js";
 import { GetDiscussionsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
-import { BrightspaceInvalidArgumentError } from "../errors.js";
+import { BrightspaceInvalidArgumentError, toPublicError, type BrightspaceErrorCode } from "../errors.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { log } from "../utils/logger.js";
 
@@ -62,6 +63,20 @@ interface D2LPost {
   IsRead: boolean;
 }
 
+/**
+ * Why a forum's topics (overview) or a topic's posts (forum detail) could not
+ * be read. Present only on the forum or topic whose request failed; its
+ * `topics` / `posts` is then `[]`, which means "unknown", never "empty".
+ */
+export interface DiscussionContentsUnavailable {
+  /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_FORBIDDEN`, `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
+  code: BrightspaceErrorCode;
+  /** The HTTP status Brightspace answered with, when it answered at all (403 means no access). */
+  status?: number;
+  /** A sentence saying what could not be read and what to do instead. */
+  notice: string;
+}
+
 export interface DiscussionTopicSummary {
   topicId: number;
   forumId: number;
@@ -81,6 +96,11 @@ export interface DiscussionForumSummary {
   isLocked: boolean;
   isHidden: boolean;
   topics: DiscussionTopicSummary[];
+  /**
+   * Set only when this forum's topics could not be read; `topics` is then
+   * `[]` meaning unknown. Absent on every forum whose topics were read.
+   */
+  topicsUnavailable?: DiscussionContentsUnavailable;
 }
 
 export interface DiscussionPost {
@@ -108,6 +128,11 @@ export interface DiscussionTopicDetail {
   scoreOutOf: number | null;
   postCount: number;
   posts: DiscussionPost[];
+  /**
+   * Set only when this topic's posts could not be read; `posts` is then `[]`
+   * and `postCount` 0, meaning unknown. Absent on every topic whose posts were read.
+   */
+  postsUnavailable?: DiscussionContentsUnavailable;
 }
 
 export interface DiscussionsForumsOverview {
@@ -167,6 +192,27 @@ function formatPosts(posts: D2LPost[]): DiscussionPost[] {
     .sort((a, b) => new Date(a.datePosted).getTime() - new Date(b.datePosted).getTime());
 }
 
+/**
+ * Describe a failed topics/posts request for one forum or topic. A sign-in
+ * problem is not a per-item failure: it is rethrown so the whole call fails,
+ * as in getAssignments, instead of every forum reading as empty. Everything
+ * else, a 403 included, is reported: an unreadable forum must never look like
+ * a forum with no topics (brightspace-mcp-server#256).
+ */
+function contentsUnavailable(error: unknown, what: string, retry: string): DiscussionContentsUnavailable {
+  if (isAuthUnavailable(error)) throw error;
+  const publicError = toPublicError(error);
+  const status = error instanceof ApiError ? error.status : undefined;
+  const reason = status === 403 ? "you do not have access to it (403)" : "the request failed";
+  return {
+    code: publicError.code,
+    ...(status !== undefined ? { status } : {}),
+    notice:
+      `${what} could not be read from Brightspace (${reason}), so its empty list means unknown, not empty. ` +
+      (status === 403 ? "Open it in Brightspace to check." : `Call getDiscussions again with ${retry}.`),
+  };
+}
+
 async function getForumsOverview(api: D2LApiClient, courseId: number): Promise<DiscussionsForumsOverview> {
   const forumsPath = api.le(courseId, "/discussions/forums/");
   const forums = await api.get<D2LForum[]>(forumsPath, { ttl: DEFAULT_CACHE_TTLS.courseContent });
@@ -175,15 +221,17 @@ async function getForumsOverview(api: D2LApiClient, courseId: number): Promise<D
 
   for (const forum of forums) {
     let topics: D2LTopic[] = [];
+    let topicsUnavailable: DiscussionContentsUnavailable | undefined;
     try {
       const topicsPath = api.le(courseId, `/discussions/forums/${forum.ForumId}/topics/`);
       topics = await api.get<D2LTopic[]>(topicsPath, { ttl: DEFAULT_CACHE_TTLS.courseContent });
-    } catch (error: any) {
-      if (error?.status === 403) {
-        log("DEBUG", `No access to topics for forum ${forum.ForumId}, skipping`);
-      } else {
-        log("DEBUG", `Failed to fetch topics for forum ${forum.ForumId}`, error);
-      }
+    } catch (error: unknown) {
+      log("DEBUG", `Failed to fetch topics for forum ${forum.ForumId}`, error);
+      topicsUnavailable = contentsUnavailable(
+        error,
+        `Topics in forum "${forum.Name}" (${forum.ForumId})`,
+        `courseId ${courseId} and forumId ${forum.ForumId}`,
+      );
     }
 
     result.push({
@@ -203,6 +251,7 @@ async function getForumsOverview(api: D2LApiClient, courseId: number): Promise<D
         mustPostToParticipate: t.MustPostToParticipate,
         scoreOutOf: t.ScoreOutOf,
       })),
+      ...(topicsUnavailable ? { topicsUnavailable } : {}),
     });
   }
 
@@ -221,15 +270,17 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
   const topicsWithPosts: DiscussionTopicDetail[] = [];
   for (const topic of topics) {
     let posts: D2LPost[] = [];
+    let postsUnavailable: DiscussionContentsUnavailable | undefined;
     try {
       const postsPath = api.le(courseId, `/discussions/forums/${forumId}/topics/${topic.TopicId}/posts/`);
       posts = await api.get<D2LPost[]>(postsPath, { ttl: DEFAULT_CACHE_TTLS.announcements });
-    } catch (error: any) {
-      if (error?.status === 403) {
-        log("DEBUG", `No access to posts for topic ${topic.TopicId}, skipping`);
-      } else {
-        log("DEBUG", `Failed to fetch posts for topic ${topic.TopicId}`, error);
-      }
+    } catch (error: unknown) {
+      log("DEBUG", `Failed to fetch posts for topic ${topic.TopicId}`, error);
+      postsUnavailable = contentsUnavailable(
+        error,
+        `Posts in topic "${topic.Name}" (${topic.TopicId})`,
+        `courseId ${courseId}, forumId ${forumId}, and topicId ${topic.TopicId}`,
+      );
     }
 
     const formattedPosts = formatPosts(posts);
@@ -243,6 +294,7 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
       scoreOutOf: topic.ScoreOutOf,
       postCount: formattedPosts.length,
       posts: formattedPosts,
+      ...(postsUnavailable ? { postsUnavailable } : {}),
     });
   }
 

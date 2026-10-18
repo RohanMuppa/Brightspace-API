@@ -17,7 +17,7 @@ import type { AppConfig, LogLevel } from "../types/index.js";
 import type { FeatureContext } from "../features/context.js";
 import { getMyCourses } from "../features/courses.js";
 import { getMyGrades, type GetMyGradesArgs, type CourseGrades } from "../features/grades.js";
-import { getUpcomingDueDates, type GetUpcomingDueDatesArgs, type UpcomingItem } from "../features/due-dates.js";
+import { getUpcomingDueDates, type GetUpcomingDueDatesArgs, type UpcomingDueDates } from "../features/due-dates.js";
 import { getInfo, type ClientInfo } from "../features/info.js";
 import { getAssignments, type GetAssignmentsArgs, type AssignmentsResult } from "../features/assignments.js";
 import { getAssignmentFiles, type GetAssignmentFilesArgs, type AssignmentFilesResult } from "../features/assignment-files.js";
@@ -143,7 +143,7 @@ export class BrightspaceClient {
     return this.run(getMyCourses, args);
   }
 
-  getUpcomingDueDates(args?: GetUpcomingDueDatesArgs): Promise<UpcomingItem[]> {
+  getUpcomingDueDates(args?: GetUpcomingDueDatesArgs): Promise<UpcomingDueDates> {
     return this.run(getUpcomingDueDates, args);
   }
 
