@@ -184,6 +184,11 @@ export class D2LApiClient {
     log("DEBUG", `D2LApiClient initialized for ${this.baseUrl}`);
   }
 
+  /** This Brightspace's origin, for callers that must restrict a link to it. */
+  get origin(): string {
+    return new URL(this.baseUrl).origin;
+  }
+
   /**
    * Discover the API versions, joining a discovery already in flight.
    *

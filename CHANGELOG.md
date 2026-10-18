@@ -28,6 +28,27 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `downloadFile()`'s `coursePath` and `get_course_content`'s `courseFiles` could lose part of a
+  file name at the first apostrophe (`Notes/Bob` for `Notes/Bob's notes.pdf`), because the
+  attribute reader stopped a quoted href at the first embedded quote character. Links are now
+  read with the quote-aware, entity-decoding attribute parser already used for LTI launch pages
+  (moved into the new shared `src/utils/html-attributes.ts`). A `coursePath` is now treated as a
+  link only when it starts with `/` or names a URL scheme, so a plain file name that happens to
+  mention `quickLink.d2l` is no longer misread as one, and an absolute quickLink URL must resolve
+  to this same Brightspace's origin. `downloadFile()` also refuses an HTML page Brightspace sends
+  back in place of a missing or inaccessible course file, instead of saving that page under the
+  file's name, and its no-session error now covers an expired session cookie as well as a missing
+  one. Ported from
+  [RohanMuppa/brightspace-mcp-server#264](https://github.com/RohanMuppa/brightspace-mcp-server/pull/264)
+  (fixes [#57](https://github.com/RohanMuppa/Brightspace-API/issues/57)).
+
+- `setup` no longer asks whether to sign in without a saved password: it always saves one, and a
+  rerun now clears any `passwordless` value carried over from an earlier `config.json`.
+  Passwordless sign-in is unchanged and still available by setting `D2L_PASSWORDLESS=true` (or
+  hand-editing `passwordless` into `config.json`). Ported from
+  [RohanMuppa/brightspace-mcp-server#264](https://github.com/RohanMuppa/brightspace-mcp-server/pull/264)
+  (fixes [#57](https://github.com/RohanMuppa/Brightspace-API/issues/57)).
+
 - `getDiscussions()` (`brightspace discussions`) logged a forum whose topics failed to load (forum
   overview, `courseId` only) or a topic whose posts failed to load (forum detail, with `forumId`)
   at DEBUG and returned it with `topics: []` / `posts: []`, indistinguishable from a forum with no

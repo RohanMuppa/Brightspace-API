@@ -103,7 +103,8 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<AppCo
 
   // Opt-in: sign in with Microsoft's passwordless phone approval, so no
   // password is read or saved. Every sign-in then needs the phone, which is
-  // why it is off unless the user chose it in setup or set D2L_PASSWORDLESS.
+  // why it is off unless D2L_PASSWORDLESS is set or passwordless is hand-edited
+  // into config.json; setup no longer offers it as a question.
   const passwordless = envBoolean(process.env.D2L_PASSWORDLESS, "D2L_PASSWORDLESS")
     ?? store?.passwordless
     ?? false;
