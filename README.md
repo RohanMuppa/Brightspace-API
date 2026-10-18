@@ -174,6 +174,9 @@ JSON result — safe to pipe into `jq`:
 brightspace due --days 3 | jq -r '.[] | "\(.dueDate)\t\(.title)"'
 ```
 
+If some courses' due dates could not be read, `brightspace due` still prints the array on stdout
+and exits 0, and adds one line to stderr: `{"failedCourses":[…]}` naming those courses.
+
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
 to `onAuthExpired: "login"` and print the MFA number to stderr as it arrives.
@@ -190,7 +193,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | Method | Args | Result |
 |---|---|---|
 | `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `Course[]` |
-| `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingItem[]` |
+| `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with an optional `failedCourses`) |
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `CourseGrades[]` |
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
@@ -210,6 +213,15 @@ read (a 404, a 5xx, a network error) stays in the array with `grades: []` and a 
 `{ code, status?, gradeUrl, notice }` — so an empty list there means "unknown", not "no grades".
 `failed` is absent on every course that was read. A course answering 403 is still left out, and a
 sign-in problem still throws.
+
+`getUpcomingDueDates` still resolves to an array of `UpcomingItem`s. When a course's assignments,
+quizzes, or discussions could not be read (a 404, a 5xx, a network error), its missing items are
+reported in a `failedCourses` property on that array — each `{ courseId, courseName, sources,
+code, status?, notice }` — so a course listed there means "unknown", not "nothing due". This
+applies with `courseId` too: an empty array with `failedCourses` set is a failed read, not an
+empty course. `failedCourses` is absent when every course was read. A 403 is still skipped
+quietly, and a sign-in problem throws, as in `getAssignments`. Array methods such as `filter` and
+`JSON.stringify` do not carry the property along, so read it from the value the call returned.
 
 Every argument and result type is exported from `brightspace-api`'s root entry point. The
 `api` property on the returned client (`client.api`, type `D2LApiClient`) is an escape hatch

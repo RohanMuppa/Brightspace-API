@@ -28,6 +28,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getUpcomingDueDates()` (`brightspace due`) logged a course whose dropbox folders, quizzes, or
+  discussions failed to load (a 404, a 5xx, a dropped connection) at DEBUG and left its items out,
+  so the array looked complete and a missing course read as "nothing due"; with `courseId` set it
+  returned `[]`, indistinguishable from an empty course. The result is still an `UpcomingItem[]`,
+  now typed `UpcomingDueDates`, which adds a `failedCourses` property on the array
+  (`UpcomingDueDatesFailure`: `courseId`, `courseName`, `sources`, `code`, `status?`, `notice`),
+  present only when something failed, so iterating, `.length`, and the JSON are unchanged. A
+  forum whose topics fail with anything but a 403 is reported the same way. A sign-in problem
+  raised mid-batch (an unrecovered 401, a pending MFA sign-in, a failed token refresh) used to
+  read as an empty course too; it now fails the whole call with `BrightspaceAuthExpiredError` /
+  `BrightspaceMfaPendingError`, as `getAssignments` already does. A 403 is still skipped. The CLI
+  keeps stdout the bare array and writes `{"failedCourses":[…]}` to stderr. Ported from
+  [RohanMuppa/brightspace-mcp-server#262](https://github.com/RohanMuppa/brightspace-mcp-server/issues/262).
+
 - `getSyllabus()` read the attachment's name from `Content-Disposition` with its own regex, which
   did not understand the RFC 5987 `filename*=UTF-8''…` form, so with `downloadPath` set a syllabus
   sent as `filename*=UTF-8''Course%20Syllabus.pdf` was saved as `UTF-8Course%20Syllabus.pdf`. It now

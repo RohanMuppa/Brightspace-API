@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getUpcomingDueDates } from "../../src/features/due-dates.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
+import { ApiError, NetworkError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 
 /**
  * Regression tests for issue #18: get_upcoming_due_dates used the D2L calendar
@@ -452,5 +454,144 @@ describe("getUpcomingDueDates course resolution", () => {
     const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
     expect(requested[0]).not.toContain("isActive=true");
     expect(items.map((i) => i.title)).toEqual(["Incomplete from last term"]);
+  });
+});
+
+/**
+ * A course whose due dates fail to load with anything but a 403 used to be
+ * logged at DEBUG and dropped, so a missing course read as "nothing due"
+ * (brightspace-mcp-server#262). It is now named in `failedCourses`.
+ */
+describe("getUpcomingDueDates failed courses", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const hwFor = (course: typeof COURSE_A) => [{ Id: course.Id, Name: `HW ${course.Name}`, DueDate: daysFromNow(1), IsHidden: false }];
+
+  function failingB(error: unknown) {
+    return setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/${COURSE_B.Id}/`)) throw error;
+      if (path.includes("/dropbox/folders/")) return hwFor(COURSE_A);
+      return [];
+    });
+  }
+
+  it.each([
+    ["a 404", new ApiError(404, "/dropbox", "missing"), "BRIGHTSPACE_NOT_FOUND", 404],
+    ["a 500", new ApiError(500, "/dropbox", "boom"), "BRIGHTSPACE_API_ERROR", 500],
+    ["a network error", new NetworkError("socket hang up"), "BRIGHTSPACE_NETWORK", undefined],
+  ])("keeps the other course and names one that fails with %s", async (_label, error, code, status) => {
+    const { ctx } = failingB(error);
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ courseId: COURSE_A.Id, title: "HW CS 180" });
+
+    expect(items.failedCourses).toEqual([
+      {
+        courseId: COURSE_B.Id,
+        courseName: COURSE_B.Name,
+        sources: ["assignments", "quizzes", "discussions"],
+        code,
+        ...(status === undefined ? {} : { status }),
+        notice: expect.stringContaining("do not read this course as having nothing due"),
+      },
+    ]);
+    // The failure rides on the array, not in it: the JSON is still just the items.
+    expect(JSON.parse(JSON.stringify(items))).toHaveLength(1);
+  });
+
+  it("names a single requested course that fails instead of returning a bare []", async () => {
+    const error = new ApiError(503, "/x", "unavailable");
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      throw error;
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7, courseId: COURSE_B.Id });
+    expect([...items]).toEqual([]);
+    expect(items.failedCourses).toHaveLength(1);
+    expect(items.failedCourses?.[0]).toMatchObject({
+      courseId: COURSE_B.Id,
+      courseName: COURSE_B.Name,
+      code: "BRIGHTSPACE_API_ERROR",
+      status: 503,
+    });
+    expect(items.failedCourses?.[0].notice).toContain(`course ${COURSE_B.Id}`);
+  });
+
+  it("names only the source that failed and keeps the course's other items", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/quizzes/")) throw new ApiError(500, "/quizzes", "boom");
+      if (path.includes("/dropbox/folders/")) return hwFor(COURSE_A);
+      return [];
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.title)).toEqual(["HW CS 180"]);
+    expect(items.failedCourses?.map((f) => [f.courseId, f.sources])).toEqual([[COURSE_A.Id, ["quizzes"]]]);
+  });
+
+  it("reports a forum whose topics fail with anything but a 403", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/discussions/forums/9/topics/")) throw new ApiError(500, "/topics", "boom");
+      if (path.includes("/discussions/forums/")) return [{ ForumId: 9, Name: "Reading Responses" }];
+      return [];
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.failedCourses?.map((f) => f.sources)).toEqual([["discussions"]]);
+  });
+
+  it("leaves the result a plain array when nothing failed", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/${COURSE_A.Id}/dropbox/`)) return hwFor(COURSE_A);
+      if (path.includes(`/${COURSE_B.Id}/dropbox/`)) return hwFor(COURSE_B);
+      return [];
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(items).not.toHaveProperty("failedCourses");
+    expect(Object.keys(items)).toEqual(["0", "1"]);
+  });
+
+  it("still skips a 403 course without naming it", async () => {
+    const { ctx } = failingB(forbidden());
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id]);
+    expect(items).not.toHaveProperty("failedCourses");
+  });
+
+  it.each([
+    ["an unrecovered 401", new ApiError(401, "/dropbox", "expired")],
+    ["a pending MFA sign-in", new AuthProcessError("mfaPending", "MFA approval pending")],
+  ])("throws instead of reporting a course when %s", async (_label, error) => {
+    const { ctx } = failingB(error);
+
+    await expect(getUpcomingDueDates(ctx, { daysAhead: 7 })).rejects.toBe(error);
+  });
+
+  it("throws when a forum's topics hit a sign-in problem", async () => {
+    const error = new ApiError(401, "/topics", "expired");
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/discussions/forums/9/topics/")) throw error;
+      if (path.includes("/discussions/forums/")) return [{ ForumId: 9, Name: "Reading Responses" }];
+      return [];
+    });
+
+    await expect(getUpcomingDueDates(ctx, { daysAhead: 7 })).rejects.toBe(error);
   });
 });
