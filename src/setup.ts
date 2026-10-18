@@ -202,12 +202,10 @@ function isValidUrl(url: string): boolean {
 export interface WizardAnswers {
   baseUrl: string;
   username: string;
-  /** Absent when passwordless sign-in was chosen: nothing is saved. */
   password?: string;
   /** An authenticator enrollment to save; absent leaves any saved one alone. */
   totpUri?: string;
   headless: boolean;
-  passwordless?: boolean;
   /** Left undefined, the saved choice for the same school is kept. */
   rememberMfa?: boolean;
   campus?: string;
@@ -258,14 +256,17 @@ export function buildConfigToSave(
     username: answers.username,
     // Always the freshly typed one: a carried v1 plaintext password would
     // otherwise be the value written to the native store.
-    password: answers.passwordless ? undefined : answers.password,
+    password: answers.password,
     // Only ever the freshly typed one. Never read back out of `carried`: the
     // enrollment lives in the credential store, never in config.json, so a
     // value here could only have come from this run.
     ...(answers.totpUri ? { totpUri: answers.totpUri } : {}),
     headless: answers.headless,
   };
-  if (answers.passwordless !== undefined) config.passwordless = answers.passwordless;
+  // Setup no longer offers passwordless sign-in and always saves a password,
+  // so a carried `passwordless: true` would make sign-in ignore that password.
+  // D2L_PASSWORDLESS (or a hand-edited config.json) still turns it on.
+  delete config.passwordless;
   if (answers.rememberMfa !== undefined) config.rememberMfa = answers.rememberMfa;
   if (answers.campus) config.campus = answers.campus;
   return config;
@@ -370,48 +371,21 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // ── Step 3: Passwordless sign-in (Microsoft Entra only) ───────────
-  // Opt-in only: passwordless trades a saved password for a phone approval
-  // on every sign-in, so it is never the default.
-  let savedPasswordless: boolean | undefined;
-  try {
-    savedPasswordless = configStoreExists() ? loadConfigStore().passwordless : undefined;
-  } catch {
-    // An invalid old config is replaced by the setup values below.
-  }
-  console.log(dim("  Microsoft Entra schools can sign you in with only a phone approval, so no password is saved on this computer."));
-  console.log(dim("  The cost: every sign-in, including automatic ones after a session expires, waits until you approve on your phone."));
-  console.log(dim("  Fine for using an assistant at your desk; not for unattended or scheduled use. It needs passwordless phone sign-in"));
-  console.log(dim("  turned on in Microsoft Authenticator first, or Microsoft will still ask for a password and sign-in will stop."));
-  const defaultPasswordless = savedPasswordless === true ? "yes" : "no";
-  let passwordlessAnswer = "";
-  while (!/^(y(es)?|no?)$/i.test(passwordlessAnswer)) {
-    passwordlessAnswer = await ask(
-      rl,
-      `  Sign in without a saved password (Microsoft Entra only)? (yes/no) [${defaultPasswordless}]: `,
-    ) || defaultPasswordless;
-    if (!/^(y(es)?|no?)$/i.test(passwordlessAnswer)) console.log(yellow("  Please enter yes or no."));
-  }
-  const passwordless = /^y/i.test(passwordlessAnswer);
-  console.log("");
-
-  // ── Step 4: Password (hidden) ─────────────────────────────────────
+  // ── Step 3: Password (hidden) ──────────────────────────────────────
   // Close the rl temporarily since askPassword manages its own
   rl.close();
 
   let password = "";
-  if (!passwordless) {
-    const passwordPrompt = preset
-      ? `What is your ${preset.passwordLabel}? `
-      : "What is your Brightspace password? ";
-    while (!password) {
-      password = await askPassword(passwordPrompt);
-      if (!password) {
-        console.log(yellow("  Password is required."));
-      }
+  const passwordPrompt = preset
+    ? `What is your ${preset.passwordLabel}? `
+    : "What is your Brightspace password? ";
+  while (!password) {
+    password = await askPassword(passwordPrompt);
+    if (!password) {
+      console.log(yellow("  Password is required."));
     }
-    console.log("");
   }
+  console.log("");
 
   // Re-open readline for the remaining prompts
   let rl2 = readline.createInterface({
@@ -419,7 +393,7 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  // ── Step 5: MFA info ─────────────────────────────────────────────
+  // ── Step 4: MFA info ─────────────────────────────────────────────
   if (preset) {
     console.log(dim(`  MFA: ${preset.mfaNote}`));
   } else {
@@ -451,7 +425,7 @@ async function main(): Promise<void> {
     : "  A browser window will open when authentication is needed."));
   console.log("");
 
-  // ── Step 6: How often to approve (the one 2FA question) ───────────
+  // ── Step 5: How often to approve (the one 2FA question) ───────────
   // Opt-in only: the default asks every time, and a shared computer must never
   // skip MFA unless asked to. Asked for every school and mode today; the
   // sign-in flow itself decides at run time whether a code can be typed.
@@ -491,22 +465,19 @@ async function main(): Promise<void> {
   const totpUri = shortcuts?.totpUri;
   console.log("");
 
-  // ── Step 7: Save config ──────────────────────────────────────────
+  // ── Step 6: Save config ──────────────────────────────────────────
   const config = buildConfigToSave(readExistingConfig(), {
     baseUrl,
     username,
     password,
     totpUri,
     headless,
-    passwordless,
     rememberMfa,
     campus: campus || undefined,
   });
 
   await saveSecureConfig(config);
-  console.log(green(passwordless
-    ? "  No password saved: each sign-in will wait for your phone approval."
-    : "  Password saved in your operating system credential store."));
+  console.log(green("  Password saved in your operating system credential store."));
   if (totpUri) console.log(green("  Authenticator enrollment saved in your operating system credential store."));
   if (shortcuts?.removeKey) {
     try {
@@ -519,7 +490,7 @@ async function main(): Promise<void> {
   console.log(green("  Config saved to: " + getConfigStorePath()));
   console.log("");
 
-  // ── Step 8: Authenticate now? ────────────────────────────────────
+  // ── Step 7: Authenticate now? ────────────────────────────────────
   const authNow = await ask(rl2, "Would you like to authenticate now? (yes/no): ");
   rl2.close();
   if (/^y(es)?$/i.test(authNow)) {

@@ -35,6 +35,8 @@ interface Setup {
   body?: Buffer | ReadableStream<Uint8Array>;
   /** Pass null to simulate no stored session cookie for getPageRaw. */
   pageResponse?: null;
+  /** Content-Type header getPageRaw answers with. */
+  pageContentType?: string;
 }
 
 /**
@@ -53,11 +55,12 @@ function largePdfStream(megabytes: number): ReadableStream<Uint8Array> {
   });
 }
 
-function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer(), pageResponse }: Setup) {
+function setup({ disposition, submissions, newsItem, contentLength, body = pdfBuffer(), pageResponse, pageContentType }: Setup) {
   const rawRequested: string[] = [];
   const pageRequested: string[] = [];
 
   const api = {
+    origin: "https://purdue.brightspace.com",
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
     get: vi.fn(async (p: string) => (p.includes("/news/") ? newsItem : submissions)),
     getRaw: vi.fn(async (p: string) => {
@@ -77,6 +80,7 @@ function setup({ disposition, submissions, newsItem, contentLength, body = pdfBu
         status: 200,
         headers: {
           ...(disposition ? { "Content-Disposition": disposition } : {}),
+          ...(pageContentType ? { "Content-Type": pageContentType } : {}),
         },
       });
     }),
@@ -520,7 +524,64 @@ describe("downloadFile: course file links (coursePath)", () => {
     }
   );
 
-  it("explains that the session cookie is missing instead of reporting a bare failure", async () => {
+  it("treats a plain path whose file name mentions quickLink.d2l as a path, not a URL", async () => {
+    const { ctx, pageRequested } = setup({});
+
+    await downloadFile(ctx, { courseId: COURSE, coursePath: "Notes/quickLink.d2l-guide.pdf", downloadPath: targetDir });
+
+    expect(pageRequested).toEqual([QUICKLINK(COURSE, "Notes/quickLink.d2l-guide.pdf")]);
+  });
+
+  it("accepts an absolute quickLink URL on this Brightspace", async () => {
+    const { ctx, pageRequested } = setup({});
+    const link = `https://purdue.brightspace.com/d2l/common/dialogs/quickLink/quickLink.d2l?ou=${COURSE}&type=coursefile&fileId=Notes%2Fa.pdf`;
+
+    await downloadFile(ctx, { courseId: COURSE, coursePath: link, downloadPath: targetDir });
+
+    expect(pageRequested).toEqual([QUICKLINK(COURSE, "Notes/a.pdf")]);
+  });
+
+  it("refuses an absolute quickLink URL on another Brightspace", async () => {
+    const { ctx, pageRequested } = setup({});
+    const link = "https://other.brightspace.com/d2l/common/dialogs/quickLink/quickLink.d2l?type=coursefile&fileId=Notes%2Fa.pdf";
+
+    const error: Error = await downloadFile(ctx, { courseId: COURSE, coursePath: link, downloadPath: targetDir }).catch(
+      (e) => e
+    );
+
+    expect(error).toBeInstanceOf(BrightspaceInvalidArgumentError);
+    expect(pageRequested).toEqual([]);
+  });
+
+  it("refuses to hand back a Brightspace web page as the file", async () => {
+    const { ctx } = setup({
+      body: Buffer.from("<!DOCTYPE html><html><body>File not found</body></html>"),
+      pageContentType: "text/html; charset=utf-8",
+    });
+
+    const error: Error = await downloadFile(ctx, {
+      courseId: COURSE,
+      coursePath: "Notes/Lecture01.pdf",
+      downloadPath: targetDir,
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(BrightspaceNotFoundError);
+    expect(error.message).toMatch(/web page instead of the course file/);
+    expect(await walk(root)).toEqual([]);
+  });
+
+  it("still downloads a course file that really is HTML", async () => {
+    const { ctx } = setup({
+      body: Buffer.from("<!DOCTYPE html><html><body>Lab handout</body></html>"),
+      pageContentType: "text/html",
+    });
+
+    const result = await downloadFile(ctx, { courseId: COURSE, coursePath: "Labs/handout.html", downloadPath: targetDir });
+
+    expect(path.basename(result.filePath)).toBe("handout.html");
+  });
+
+  it("explains that the session cookie is missing or expired instead of reporting a bare failure", async () => {
     const { ctx } = setup({ pageResponse: null });
 
     const error: Error = await downloadFile(ctx, {
@@ -531,6 +592,7 @@ describe("downloadFile: course file links (coursePath)", () => {
 
     expect(error).toBeInstanceOf(BrightspaceAuthExpiredError);
     expect(error.message).toMatch(/sign in|re-authenticate|session cookie/i);
+    expect(error.message).toMatch(/missing or has expired/i);
   });
 
   it("cannot be combined with topicId", async () => {

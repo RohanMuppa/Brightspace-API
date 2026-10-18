@@ -37,6 +37,26 @@ describe("parseCoursePath", () => {
     const result = parseCoursePath(input, COURSE);
     expect(result).toHaveProperty("error");
   });
+
+  it("treats a plain path whose file name mentions quickLink.d2l as a path, not a URL", () => {
+    expect(parseCoursePath("Notes/quickLink.d2l-guide.pdf", COURSE)).toBe("Notes/quickLink.d2l-guide.pdf");
+  });
+
+  it("accepts an absolute quickLink URL on the given origin", () => {
+    const link = `https://purdue.brightspace.com${QUICKLINK_PATH}?ou=101&type=coursefile&fileId=Notes%2Fa.pdf`;
+    expect(parseCoursePath(link, COURSE, "https://purdue.brightspace.com")).toBe("Notes/a.pdf");
+  });
+
+  it("refuses an absolute quickLink URL on another origin", () => {
+    const link = `https://other.brightspace.com${QUICKLINK_PATH}?type=coursefile&fileId=Notes%2Fa.pdf`;
+    const result = parseCoursePath(link, COURSE, "https://purdue.brightspace.com");
+    expect(result).toHaveProperty("error");
+  });
+
+  it("refuses an absolute quickLink URL when no origin is configured", () => {
+    const link = `https://purdue.brightspace.com${QUICKLINK_PATH}?type=coursefile&fileId=Notes%2Fa.pdf`;
+    expect(parseCoursePath(link, COURSE)).toHaveProperty("error");
+  });
 });
 
 describe("extractCourseFilePaths", () => {
@@ -70,5 +90,29 @@ describe("extractCourseFilePaths", () => {
     expect(extractCourseFilePaths(link("..%2fsecret.pdf") + link("Notes%2fok.pdf"), COURSE)).toEqual([
       "Notes/ok.pdf",
     ]);
+  });
+
+  it("keeps an apostrophe in the file name, written literally or as a character reference", () => {
+    expect(extractCourseFilePaths(link("Notes%2fBob's%20notes.pdf"), COURSE)).toEqual(["Notes/Bob's notes.pdf"]);
+    expect(extractCourseFilePaths(link("Notes%2fBob&#39;s%20notes.pdf"), COURSE)).toEqual(["Notes/Bob's notes.pdf"]);
+    expect(extractCourseFilePaths(link("Notes%2fBob&#x27;s%20notes.pdf"), COURSE)).toEqual(["Notes/Bob's notes.pdf"]);
+  });
+
+  it("keeps a double quote in a single-quoted href", () => {
+    const html = `<a href='${QUICKLINK_PATH}?ou=101&amp;type=coursefile&amp;fileId=Notes%2fthe "best" one.pdf'>x</a>`;
+
+    expect(extractCourseFilePaths(html, COURSE)).toEqual(['Notes/the "best" one.pdf']);
+  });
+
+  it("resolves an absolute quickLink URL on the given origin", () => {
+    const html = `<a href="https://purdue.brightspace.com${QUICKLINK_PATH}?ou=101&amp;type=coursefile&amp;fileId=Notes%2fa.pdf">x</a>`;
+
+    expect(extractCourseFilePaths(html, COURSE, "https://purdue.brightspace.com")).toEqual(["Notes/a.pdf"]);
+  });
+
+  it("drops an absolute quickLink URL on another origin", () => {
+    const html = `<a href="https://other.brightspace.com${QUICKLINK_PATH}?ou=101&amp;type=coursefile&amp;fileId=Notes%2fa.pdf">x</a>`;
+
+    expect(extractCourseFilePaths(html, COURSE, "https://purdue.brightspace.com")).toEqual([]);
   });
 });

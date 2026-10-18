@@ -147,7 +147,7 @@ export async function downloadFile(ctx: FeatureContext, args: DownloadFileArgs):
   }
 
   if (coursePath !== undefined) {
-    const filePath = parseCoursePath(coursePath, courseId);
+    const filePath = parseCoursePath(coursePath, courseId, ctx.api.origin);
     if (typeof filePath !== "string") {
       throw new BrightspaceInvalidArgumentError(["coursePath: " + filePath.error], filePath.error);
     }
@@ -186,7 +186,18 @@ async function downloadCourseFile(
   );
   if (!response) {
     throw new BrightspaceAuthExpiredError(
-      `Could not fetch this course file: no usable Brightspace session cookie. Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to sign in, then retry.`
+      `Could not fetch this course file: the Brightspace session cookie is missing or has expired. Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to sign in, then retry.`
+    );
+  }
+
+  // A missing file or a refused one can come back as an ordinary Brightspace
+  // web page with HTTP 200. That page is not the file, so it is never saved
+  // or shown under the file's name.
+  const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase();
+  if (contentType.startsWith("text/html") && !/\.html?$/i.test(filePath)) {
+    await response.body?.cancel();
+    throw new BrightspaceNotFoundError(
+      `Brightspace answered with a web page instead of the course file "${filePath}". The file may have been moved or deleted, or this account may not be allowed to open it.`
     );
   }
 

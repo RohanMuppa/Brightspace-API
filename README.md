@@ -283,12 +283,14 @@ can also skip config-file/env resolution entirely by passing a fully-built `AppC
 `createBrightspaceClient({ config })` — there is no `password` option; credentials never enter
 through the client's options.
 
-With passwordless sign-in on, no password is read or saved at all: the default Entra flow
-submits only the username and waits for your phone's approval, so every sign-in — including an
-automatic one after a session expires — needs that approval. This suits interactive use, not
-unattended or scheduled jobs, and only applies to Microsoft Entra schools; passwordless phone
-sign-in must already be registered in Microsoft Authenticator, or sign-in fails at once naming
-`D2L_PASSWORDLESS` instead of waiting out the usual timeout.
+`setup` no longer asks about passwordless sign-in and always saves a password; turn it on by
+setting `D2L_PASSWORDLESS=true` (or hand-editing `passwordless` into `config.json`). With it on,
+no password is read or saved at all: the default Entra flow submits only the username and waits
+for your phone's approval, so every sign-in — including an automatic one after a session expires
+— needs that approval. This suits interactive use, not unattended or scheduled jobs, and only
+applies to Microsoft Entra schools; passwordless phone sign-in must already be registered in
+Microsoft Authenticator, or sign-in fails at once naming `D2L_PASSWORDLESS` instead of waiting
+out the usual timeout.
 
 ## Schools supported
 
