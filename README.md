@@ -223,6 +223,14 @@ empty course. `failedCourses` is absent when every course was read. A 403 is sti
 quietly, and a sign-in problem throws, as in `getAssignments`. Array methods such as `filter` and
 `JSON.stringify` do not carry the property along, so read it from the value the call returned.
 
+`getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
+lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,
+could not be read (a 403, a 404, a 5xx, a network error), that forum or topic is still listed
+with an empty `topics` / `posts` (and `postCount: 0`) plus a `topicsUnavailable` /
+`postsUnavailable` field — `{ code, status?, notice }` — so an empty list there means
+"unknown", not "empty". The field is absent on every forum and topic that was read. A sign-in
+problem throws, as in `getAssignments`.
+
 Every argument and result type is exported from `brightspace-api`'s root entry point. The
 `api` property on the returned client (`client.api`, type `D2LApiClient`) is an escape hatch
 for making raw, authenticated D2L API calls the facade doesn't cover — it is not part of the

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { getDiscussions } from "../../src/features/discussions.js";
 import { BrightspaceInvalidArgumentError } from "../../src/errors.js";
+import { ApiError, NetworkError, TokenRefreshError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 import type { FeatureContext } from "../../src/features/context.js";
 
 const COURSE_ID = 101;
@@ -128,12 +130,10 @@ describe("getDiscussions forums overview", () => {
     });
   });
 
-  it("skips topics for a hidden forum it cannot access rather than throwing", async () => {
+  it("marks a forum it cannot access (403) as unavailable rather than throwing or showing it empty", async () => {
     const { ctx } = setup((path) => {
       if (path.endsWith("/discussions/forums/")) return [forum(1, { IsHidden: true })];
-      const error: any = new Error("forbidden");
-      error.status = 403;
-      throw error;
+      throw new ApiError(403, path, "forbidden");
     });
 
     const result = await getDiscussions(ctx, { courseId: COURSE_ID });
@@ -142,9 +142,81 @@ describe("getDiscussions forums overview", () => {
       courseId: COURSE_ID,
       forumCount: 1,
       forums: [
-        { forumId: 1, name: "Forum 1", description: "Forum 1 description", isLocked: false, isHidden: true, topics: [] },
+        {
+          forumId: 1,
+          name: "Forum 1",
+          description: "Forum 1 description",
+          isLocked: false,
+          isHidden: true,
+          topics: [],
+          topicsUnavailable: {
+            code: "BRIGHTSPACE_FORBIDDEN",
+            status: 403,
+            notice: expect.stringContaining("403"),
+          },
+        },
       ],
     });
+  });
+
+  it("marks only the forum whose topics fail to load, and still lists the others", async () => {
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1), forum(2), forum(3)];
+      if (path.includes("/forums/1/topics/")) return [topic(1, 10)];
+      if (path.includes("/forums/2/topics/")) throw new ApiError(500, path, "boom");
+      if (path.includes("/forums/3/topics/")) throw new NetworkError("socket hang up");
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID });
+
+    expect(result.forumCount).toBe(3);
+    const [loaded, failed, offline] = result.forums;
+    expect(loaded.topics.map((t: any) => t.topicId)).toEqual([10]);
+    expect(loaded).not.toHaveProperty("topicsUnavailable");
+    expect(failed.topics).toEqual([]);
+    expect(failed.topicsUnavailable).toEqual({
+      code: "BRIGHTSPACE_API_ERROR",
+      status: 500,
+      notice: expect.stringContaining("forumId 2"),
+    });
+    expect(failed.topicsUnavailable.notice).toContain('"Forum 2"');
+    expect(failed.topicsUnavailable.notice).toContain("unknown, not empty");
+    expect(offline.topics).toEqual([]);
+    expect(offline.topicsUnavailable.code).toBe("BRIGHTSPACE_NETWORK");
+    expect(offline.topicsUnavailable).not.toHaveProperty("status");
+  });
+
+  it("adds no new keys when every forum's topics load", async () => {
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1), forum(2)];
+      if (path.includes("/forums/1/topics/")) return [topic(1, 10)];
+      if (path.includes("/forums/2/topics/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID });
+
+    expect(Object.keys(result).sort()).toEqual(["courseId", "forumCount", "forums"]);
+    for (const f of result.forums) {
+      expect(Object.keys(f).sort()).toEqual(["description", "forumId", "isHidden", "isLocked", "name", "topics"]);
+    }
+    expect(result.forums[1].topics).toEqual([]);
+  });
+
+  it.each([
+    ["an unrecovered 401", () => new ApiError(401, "/topics", "expired")],
+    ["a pending MFA sign-in", () => new AuthProcessError("mfaPending", "approve on your phone", "42")],
+    ["a failed token refresh", () => new TokenRefreshError("mint down")],
+  ])("throws instead of showing a forum empty on %s", async (_label, makeError) => {
+    const thrown = makeError();
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1), forum(2)];
+      if (path.includes("/forums/1/topics/")) return [topic(1, 10)];
+      throw thrown;
+    });
+
+    await expect(getDiscussions(ctx, { courseId: COURSE_ID })).rejects.toBe(thrown);
   });
 });
 
@@ -212,6 +284,73 @@ describe("getDiscussions forum detail", () => {
         },
       ],
     });
+  });
+});
+
+describe("getDiscussions forum detail when a topic's posts fail to load", () => {
+  const respondWith = (failure: unknown) => (path: string) => {
+    if (path === "/d2l/api/le/1.0/101/discussions/forums/1") return forum(1);
+    if (path.endsWith("/forums/1/topics/")) return [topic(1, 10), topic(1, 11)];
+    if (path.includes("/topics/10/posts/")) return [post(1)];
+    if (path.includes("/topics/11/posts/")) throw failure;
+    throw new Error(`unexpected path ${path}`);
+  };
+
+  it("marks only that topic, with postCount 0, and keeps the other topic's posts", async () => {
+    const { ctx } = setup(respondWith(new ApiError(404, "/posts", "missing")));
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 });
+
+    expect(result.topicCount).toBe(2);
+    const [loaded, failed] = result.topics;
+    expect(loaded.postCount).toBe(1);
+    expect(loaded).not.toHaveProperty("postsUnavailable");
+    expect(failed.posts).toEqual([]);
+    expect(failed.postCount).toBe(0);
+    expect(failed.postsUnavailable).toEqual({
+      code: "BRIGHTSPACE_NOT_FOUND",
+      status: 404,
+      notice: expect.stringContaining("topicId 11"),
+    });
+    expect(failed.postsUnavailable.notice).toContain('"Topic 11"');
+  });
+
+  it("reports a 403 on a topic's posts with its status", async () => {
+    const { ctx } = setup(respondWith(new ApiError(403, "/posts", "forbidden")));
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 });
+
+    expect(result.topics[1].postsUnavailable).toMatchObject({ code: "BRIGHTSPACE_FORBIDDEN", status: 403 });
+  });
+
+  it("throws on a sign-in problem instead of showing the topic empty", async () => {
+    const thrown = new ApiError(401, "/posts", "expired");
+    const { ctx } = setup(respondWith(thrown));
+
+    await expect(getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 })).rejects.toBe(thrown);
+  });
+
+  it("adds no new keys when every topic's posts load", async () => {
+    const { ctx } = setup((path) => {
+      if (path === "/d2l/api/le/1.0/101/discussions/forums/1") return forum(1);
+      if (path.endsWith("/forums/1/topics/")) return [topic(1, 10)];
+      if (path.includes("/topics/10/posts/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const result: any = await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 });
+
+    expect(Object.keys(result.topics[0]).sort()).toEqual([
+      "description",
+      "dueDate",
+      "isLocked",
+      "mustPostToParticipate",
+      "name",
+      "postCount",
+      "posts",
+      "scoreOutOf",
+      "topicId",
+    ]);
   });
 });
 

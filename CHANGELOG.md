@@ -28,6 +28,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getDiscussions()` (`brightspace discussions`) logged a forum whose topics failed to load (forum
+  overview, `courseId` only) or a topic whose posts failed to load (forum detail, with `forumId`)
+  at DEBUG and returned it with `topics: []` / `posts: []`, indistinguishable from a forum with no
+  topics or a topic with no posts. Such a forum or topic is still listed, with the empty list, plus
+  an additive `topicsUnavailable` / `postsUnavailable` field (`DiscussionContentsUnavailable`:
+  `code`, `status?`, `notice`), absent on everything that was read, so the usual shape and the
+  `DiscussionsResult` type are unchanged. This now includes a 403, which was skipped quietly
+  before; it is reported with `code: "BRIGHTSPACE_FORBIDDEN"` and `status: 403`, since the caller
+  otherwise reads the forum as empty. A sign-in problem (an unrecovered 401, a pending MFA sign-in,
+  a failed token refresh) used to read as an empty forum too; it now fails the whole call, as
+  `getAssignments` already does. Ported from
+  [RohanMuppa/brightspace-mcp-server#256](https://github.com/RohanMuppa/brightspace-mcp-server/issues/256).
+
 - `getUpcomingDueDates()` (`brightspace due`) logged a course whose dropbox folders, quizzes, or
   discussions failed to load (a 404, a 5xx, a dropped connection) at DEBUG and left its items out,
   so the array looked complete and a missing course read as "nothing due"; with `courseId` set it

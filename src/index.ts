@@ -45,6 +45,7 @@ export type {
 export type { DownloadFileArgs, DownloadResult } from "./features/download.js";
 export type {
   GetDiscussionsArgs,
+  DiscussionContentsUnavailable,
   DiscussionTopicSummary,
   DiscussionForumSummary,
   DiscussionPost,
