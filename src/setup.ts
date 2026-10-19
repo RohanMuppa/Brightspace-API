@@ -18,6 +18,7 @@ import {
 } from "./utils/config-store.js";
 import { saveSecureConfig } from "./utils/secure-config.js";
 import { deleteStoredTotpUri, getStoredTotpUri } from "./auth/credential-store.js";
+import { canonicalUsername } from "./auth/username.js";
 import { askShortcutQuestion, type ShortcutIO } from "./utils/two-factor-shortcuts.js";
 import type { ConfigStoreData } from "./utils/config-store.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
@@ -233,6 +234,17 @@ function sameSchool(stored: string | undefined, chosen: string): boolean {
 }
 
 /**
+ * The username to save: the typed one in canonical form, unless it names the
+ * account already saved. That one keeps its saved spelling, because earlier
+ * releases keyed its password, enrollment and session directory on the exact
+ * case, and only that spelling still derives those legacy keys.
+ */
+export function savedUsername(saved: string | undefined, typed: string): string {
+  const canonical = canonicalUsername(typed);
+  return saved !== undefined && canonicalUsername(saved) === canonical ? saved : canonical;
+}
+
+/**
  * Merge the wizard's answers over the settings already saved.
  *
  * `saveConfigStore` replaces the whole file, and setup is the documented way
@@ -253,7 +265,7 @@ export function buildConfigToSave(
   const config: ConfigStoreData = {
     ...carried,
     baseUrl: answers.baseUrl,
-    username: answers.username,
+    username: savedUsername(carried?.username, answers.username),
     // Always the freshly typed one: a carried v1 plaintext password would
     // otherwise be the value written to the native store.
     password: answers.password,
@@ -369,6 +381,9 @@ async function main(): Promise<void> {
       console.log(yellow("  Username is required."));
     }
   }
+  // The saved spelling of the same account still finds what earlier releases saved.
+  const existing = readExistingConfig();
+  username = savedUsername(existing && sameSchool(existing.baseUrl, baseUrl) ? existing.username : undefined, username);
   console.log("");
 
   // ── Step 3: Password (hidden) ──────────────────────────────────────
