@@ -28,6 +28,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- An email username saved in one case and typed in another (`Student@purdue.edu` vs
+  `student@purdue.edu`) named two different accounts, so the saved password, authenticator
+  enrollment and session were not found and sign-in started over. An email username is now
+  trimmed and lowercased before it names an account, so every casing shares one saved password,
+  one enrollment and one session directory; a plain username is only trimmed and keeps its case,
+  since a school may treat it as case-sensitive. Secrets saved under the exact-case username by
+  earlier versions are still read, moved to the shared key once the copy reads back intact (a
+  store that refuses keeps the old entry), and removed along with it on delete; an existing
+  exact-case session directory keeps being used. `setup` saves a new email username lowercased,
+  and keeps the saved spelling when the same account is typed again in another case. Ported from
+  [RohanMuppa/brightspace-mcp-server#269](https://github.com/RohanMuppa/brightspace-mcp-server/pull/269)
+  (fixes [RohanMuppa/brightspace-mcp-server#267](https://github.com/RohanMuppa/brightspace-mcp-server/issues/267)).
+
 - `downloadFile()`'s `coursePath` and `get_course_content`'s `courseFiles` could lose part of a
   file name at the first apostrophe (`Notes/Bob` for `Notes/Bob's notes.pdf`), because the
   attribute reader stopped a quoted href at the first embedded quote character. Links are now
