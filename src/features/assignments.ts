@@ -8,6 +8,7 @@ import type { z } from "zod";
 import { D2LApiClient, DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { fetchAllItems, fetchAllObjects } from "../api/paginate.js";
 import { isAuthUnavailable } from "../api/errors.js";
+import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 import { GetAssignmentsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
@@ -50,6 +51,20 @@ export interface AssignmentFeedback {
   feedback: string | null;
 }
 
+/**
+ * Why a folder's feedback or a course's quiz list could not be read. Present
+ * only where the request failed; the `feedback: null` or the missing quizzes
+ * next to it then mean "unknown", never "none".
+ */
+export interface AssignmentDataUnavailable {
+  /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_FORBIDDEN`, `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
+  code: BrightspaceErrorCode;
+  /** The HTTP status Brightspace answered with, when it answered at all (403 means no access). */
+  status?: number;
+  /** A sentence saying what could not be read and what to do instead. */
+  notice: string;
+}
+
 export interface DropboxAssignmentItem {
   type: "assignment";
   id: number;
@@ -62,6 +77,12 @@ export interface DropboxAssignmentItem {
   rubric: AssignmentRubric[] | null;
   submission: AssignmentSubmission | null;
   feedback: AssignmentFeedback | null;
+  /**
+   * Set only when this folder's feedback could not be read (anything but a
+   * 404, which means no feedback yet); `feedback` is then `null` meaning
+   * unknown, not "no feedback" or "not graded". Absent otherwise.
+   */
+  feedbackUnavailable?: AssignmentDataUnavailable;
 }
 
 export interface QuizAssignmentItem {
@@ -98,10 +119,17 @@ export interface CourseAssignments {
   courseId: number;
   courseName: string;
   assignments: AssignmentItem[];
+  /**
+   * Set only when the course's quiz list could not be read (anything but a
+   * 404, which means the course has no quiz tool). The quizzes in
+   * `assignments` are then only those found through the course content, so a
+   * quiz missing from them is unknown, not absent. Absent otherwise.
+   */
+  quizzesUnavailable?: AssignmentDataUnavailable;
 }
 
 export type AssignmentsResult =
-  | { courseId: number; assignments: AssignmentItem[] }
+  | { courseId: number; assignments: AssignmentItem[]; quizzesUnavailable?: AssignmentDataUnavailable }
   | { courses: CourseAssignments[] };
 
 // D2L Dropbox API types
@@ -335,6 +363,26 @@ async function recoverContentQuizzes(
 }
 
 /**
+ * Describe a failed feedback or quiz-list request. A sign-in problem is not a
+ * per-item failure and is rethrown, as everywhere else in getAssignments. A
+ * 403 is reported too: it says nothing about whether feedback or quizzes
+ * exist (brightspace-mcp-server#276, #278).
+ */
+function dataUnavailable(error: unknown, what: string, consequence: string): AssignmentDataUnavailable {
+  if (isAuthUnavailable(error)) throw error;
+  const publicError = toPublicError(error);
+  const status: unknown = (error as any)?.status;
+  const reason = status === 403 ? "you do not have access to it (403)" : "the request failed";
+  return {
+    code: publicError.code,
+    ...(typeof status === "number" ? { status } : {}),
+    notice:
+      `${what} could not be read from Brightspace (${reason}), so ${consequence}. ` +
+      (status === 403 ? "Open it in Brightspace to check." : "Call getAssignments again, or open it in Brightspace to check."),
+  };
+}
+
+/**
  * Fetch assignments (dropbox + quizzes) for a single course.
  *
  * baseUrl is optional: without it the items carry a null url.
@@ -344,6 +392,15 @@ export async function fetchCourseAssignments(
   courseId: number,
   baseUrl?: string
 ): Promise<AssignmentItem[]> {
+  return (await fetchCourseInventory(apiClient, courseId, baseUrl)).assignments;
+}
+
+/** fetchCourseAssignments, plus whether the course's quiz list was read. */
+async function fetchCourseInventory(
+  apiClient: D2LApiClient,
+  courseId: number,
+  baseUrl?: string
+): Promise<{ assignments: AssignmentItem[]; quizzesUnavailable?: AssignmentDataUnavailable }> {
   const assignments: AssignmentItem[] = [];
 
   // Fetch dropbox folders, quizzes, and the gradebook in parallel. The
@@ -399,8 +456,11 @@ export async function fetchCourseAssignments(
         }
       }
 
-      // Fetch feedback independently of submissions
+      // Fetch feedback independently of submissions. A 404 means no feedback
+      // yet. Any other failure leaves it unknown rather than "no feedback",
+      // and the item says so (brightspace-mcp-server#276).
       let feedback: DropboxFeedback | null = null;
+      let feedbackUnavailable: AssignmentDataUnavailable | undefined;
       try {
         feedback = await apiClient.get<DropboxFeedback>(
           apiClient.le(courseId, `/dropbox/folders/${folder.Id}/feedback/myFeedback/`),
@@ -408,9 +468,13 @@ export async function fetchCourseAssignments(
         );
       } catch (error: any) {
         if (isAuthUnavailable(error)) throw error;
-        // 404/403 means no feedback available (or no access) - that's fine
-        if (error?.status !== 404 && error?.status !== 403) {
+        if (error?.status !== 404) {
           log("DEBUG", `Failed to fetch feedback for folder ${folder.Id}`, error);
+          feedbackUnavailable = dataUnavailable(
+            error,
+            `Feedback for "${folder.Name}" (${folder.Id})`,
+            "its null feedback means unknown, not no feedback or not graded"
+          );
         }
       }
 
@@ -456,6 +520,7 @@ export async function fetchCourseAssignments(
                 : null,
             }
           : null,
+        ...(feedbackUnavailable ? { feedbackUnavailable } : {}),
       };
 
       assignments.push(assignment);
@@ -466,12 +531,22 @@ export async function fetchCourseAssignments(
   }
 
   // Process quizzes. Content discovery remains useful when the list route is
-  // forbidden or unavailable, so a failed list starts from an empty set.
+  // forbidden or unavailable, so a failed list starts from an empty set, but
+  // the caller is told so a quiz it cannot see isn't read as no quiz
+  // (brightspace-mcp-server#278). A 404 means the course has no quiz tool.
   let quizzes: QuizReadData[] = [];
+  let quizzesUnavailable: AssignmentDataUnavailable | undefined;
   if (quizResult.status === "fulfilled") {
     quizzes = quizResult.value;
   } else {
     log("DEBUG", `Failed to fetch quizzes for course ${courseId}`, quizResult.reason);
+    if ((quizResult.reason as any)?.status !== 404) {
+      quizzesUnavailable = dataUnavailable(
+        quizResult.reason,
+        `The quiz list for course ${courseId}`,
+        "only quizzes linked from the course content are listed and others may be missing"
+      );
+    }
   }
 
   if (contentResult.status === "fulfilled") {
@@ -585,7 +660,7 @@ export async function fetchCourseAssignments(
     log("DEBUG", `Failed to fetch the gradebook for course ${courseId}`, gradebookResult.reason);
   }
 
-  return assignments;
+  return { assignments, ...(quizzesUnavailable ? { quizzesUnavailable } : {}) };
 }
 
 /**
@@ -644,9 +719,9 @@ export async function getAssignments(
   const { courseId } = GetAssignmentsSchema.parse(args);
 
   if (courseId) {
-    const assignments = await fetchCourseAssignments(ctx.api, courseId, ctx.config.baseUrl);
+    const { assignments, quizzesUnavailable } = await fetchCourseInventory(ctx.api, courseId, ctx.config.baseUrl);
     log("INFO", `getAssignments: Retrieved ${assignments.length} assignments for course ${courseId}`);
-    return { courseId, assignments };
+    return { courseId, assignments, ...(quizzesUnavailable ? { quizzesUnavailable } : {}) };
   }
 
   // isActive=true is the configured policy, not a constant: with activeOnly
@@ -676,8 +751,13 @@ export async function getAssignments(
   // Fetch assignments for each course (handle 403s gracefully)
   const assignmentPromises = filteredEnrollments.map(async (item) => {
     try {
-      const assignments = await fetchCourseAssignments(ctx.api, item.OrgUnit.Id, ctx.config.baseUrl);
-      return { courseId: item.OrgUnit.Id, courseName: item.OrgUnit.Name, assignments };
+      const { assignments, quizzesUnavailable } = await fetchCourseInventory(ctx.api, item.OrgUnit.Id, ctx.config.baseUrl);
+      return {
+        courseId: item.OrgUnit.Id,
+        courseName: item.OrgUnit.Name,
+        assignments,
+        ...(quizzesUnavailable ? { quizzesUnavailable } : {}),
+      };
     } catch (error: any) {
       // 403 means no access (past course, etc) - log and skip
       if (error?.status === 403) {

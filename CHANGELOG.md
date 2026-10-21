@@ -28,6 +28,25 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getAssignments()` (`brightspace assignments`) treated a dropbox folder whose feedback request
+  failed with a 403, a 5xx or a network error the same as one with no feedback yet: it logged the
+  failure at DEBUG (a 403 not at all) and returned `feedback: null`, so a graded assignment whose
+  feedback could not be read looked ungraded. A 404 still means no feedback yet. Any other failure
+  now adds a `feedbackUnavailable` field (`AssignmentDataUnavailable`: `code`, `status?`,
+  `notice`) to that assignment, so its `feedback: null` reads as unknown. Ported from
+  [RohanMuppa/brightspace-mcp-server#277](https://github.com/RohanMuppa/brightspace-mcp-server/pull/277)
+  (fixes [RohanMuppa/brightspace-mcp-server#276](https://github.com/RohanMuppa/brightspace-mcp-server/issues/276)).
+
+- `getAssignments()` logged a course whose quiz list failed to load (a 403, a 5xx, a network error)
+  at DEBUG and listed only the quizzes it found through the course content, so the course's other
+  quizzes silently went missing and read as "no quiz". Such a course now carries a
+  `quizzesUnavailable` field (`AssignmentDataUnavailable`) on the single-course result and on its
+  `CourseAssignments` entry in the all-courses result. A 404 still means the course has no quiz
+  tool and is not reported. Both fields are additive and absent whenever the read succeeded, so
+  the usual shape is unchanged. Ported from
+  [RohanMuppa/brightspace-mcp-server#279](https://github.com/RohanMuppa/brightspace-mcp-server/pull/279)
+  (fixes [RohanMuppa/brightspace-mcp-server#278](https://github.com/RohanMuppa/brightspace-mcp-server/issues/278)).
+
 - An email username saved in one case and typed in another (`Student@purdue.edu` vs
   `student@purdue.edu`) named two different accounts, so the saved password, authenticator
   enrollment and session were not found and sign-in started over. An email username is now

@@ -757,3 +757,99 @@ describe("getAssignments while sign-in is pending", () => {
     expect(result.courses[1].assignments).toEqual([]);
   });
 });
+
+/**
+ * A feedback read that fails is not "no feedback", and a quiz list that fails
+ * is not "no quizzes". Both stay in the result, with a field saying the read
+ * failed. Ported from brightspace-mcp-server#276 and #278.
+ */
+describe("getAssignments reads that fail", () => {
+  const folderOf = (result: Awaited<ReturnType<typeof getAssignments>>) => {
+    if (!("assignments" in result)) throw new Error("expected the single-course shape");
+    return result.assignments.find((a) => a.type === "assignment") as any;
+  };
+
+  it("reports no feedback yet (404) as null feedback with no feedbackUnavailable", async () => {
+    const { ctx } = setupContext(courseWork, allCoursesConfig(true));
+
+    const folder = folderOf(await getAssignments(ctx, { courseId: COURSE_A.Id }));
+
+    expect(folder.feedback).toBeNull();
+    expect(folder).not.toHaveProperty("feedbackUnavailable");
+  });
+
+  it.each([
+    ["a 5xx", () => new ApiError(500, "/myFeedback/", "boom"), "BRIGHTSPACE_API_ERROR", 500],
+    ["a 403", () => new ApiError(403, "/myFeedback/", "forbidden"), "BRIGHTSPACE_FORBIDDEN", 403],
+  ])("marks feedback unknown when its read fails with %s", async (_label, makeError, code, status) => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/myFeedback/")) throw makeError();
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const folder = folderOf(await getAssignments(ctx, { courseId: COURSE_A.Id }));
+
+    expect(folder.feedback).toBeNull();
+    expect(folder.feedbackUnavailable).toMatchObject({ code, status });
+    expect(folder.feedbackUnavailable.notice).toContain(`HW ${COURSE_A.Id}`);
+    expect(folder.feedbackUnavailable.notice).toContain("not graded");
+  });
+
+  it("keeps feedback that was read, with no feedbackUnavailable", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/myFeedback/")) return { Score: 9, Feedback: { Text: "Nice", Html: "<p>Nice</p>" } };
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const folder = folderOf(await getAssignments(ctx, { courseId: COURSE_A.Id }));
+
+    expect(folder.feedback).toMatchObject({ score: 9 });
+    expect(folder).not.toHaveProperty("feedbackUnavailable");
+  });
+
+  it("names a single course whose quiz list failed, keeping quizzes found in the course content", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/quizzes/")) throw new ApiError(502, path, "Bad Gateway");
+      if (path.endsWith("/content/toc")) {
+        return { Modules: [{ Topics: [{ TopicId: 7, Title: "Quiz 3", ActivityType: 4, ToolItemId: 77 }] }] };
+      }
+      if (path.endsWith("/quizzes/77")) return { QuizId: 77, Name: "Quiz 3", IsActive: true };
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
+    if (!("assignments" in result)) throw new Error("expected the single-course shape");
+
+    expect(result.assignments.filter((a) => a.type === "quiz").map((a) => a.name)).toEqual(["Quiz 3"]);
+    expect(result.quizzesUnavailable).toMatchObject({ code: "BRIGHTSPACE_API_ERROR", status: 502 });
+    expect(result.quizzesUnavailable?.notice).toContain(String(COURSE_A.Id));
+  });
+
+  it("names the course whose quiz list failed in the all-courses result, a 403 included", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      if (path.endsWith(`/${COURSE_B.Id}/quizzes/`)) throw new ApiError(403, path, "forbidden");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses[0]).not.toHaveProperty("quizzesUnavailable");
+    expect(result.courses[1]).toMatchObject({
+      courseId: COURSE_B.Id,
+      quizzesUnavailable: { code: "BRIGHTSPACE_FORBIDDEN", status: 403 },
+    });
+  });
+
+  it("treats a 404 quiz list as a course with no quiz tool, not a failed read", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/quizzes/")) throw new ApiError(404, path, "Not Found");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
+
+    expect(result).not.toHaveProperty("quizzesUnavailable");
+  });
+});
