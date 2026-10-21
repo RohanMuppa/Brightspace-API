@@ -223,6 +223,14 @@ empty course. `failedCourses` is absent when every course was read. A 403 is sti
 quietly, and a sign-in problem throws, as in `getAssignments`. Array methods such as `filter` and
 `JSON.stringify` do not carry the property along, so read it from the value the call returned.
 
+`getAssignments` marks reads that failed instead of showing them empty. A dropbox assignment whose
+feedback could not be read (a 403, a 5xx, a network error; a 404 just means no feedback yet) has a
+`feedbackUnavailable` field — `{ code, status?, notice }` — so its `feedback: null` means
+"unknown", not "not graded". A course whose quiz list could not be read (anything but a 404) has
+a `quizzesUnavailable` field of the same shape, on the single-course result or on its entry in
+`courses`: its quizzes are then only those found through the course content, and others may be
+missing. Both fields are absent when the read succeeded.
+
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,
 could not be read (a 403, a 404, a 5xx, a network error), that forum or topic is still listed

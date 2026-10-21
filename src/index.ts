@@ -27,6 +27,7 @@ export type {
   AssignmentSubmissionFile,
   AssignmentSubmission,
   AssignmentFeedback,
+  AssignmentDataUnavailable,
   DropboxAssignmentItem,
   QuizAssignmentItem,
   GradeOnlyAssignmentItem,
