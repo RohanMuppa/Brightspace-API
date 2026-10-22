@@ -125,10 +125,18 @@ export async function fetchAllObjects<T>(
   return objects;
 }
 
-/** A Next value resolved to a request path. */
-function nextPath(firstPath: string, next: string): string {
+/** A Next value resolved to a request path, or null when it cannot be followed. */
+function nextPath(firstPath: string, next: string): string | null {
   if (/^https?:\/\//i.test(next)) {
-    const url = new URL(next);
+    let url: URL;
+    try {
+      url = new URL(next);
+    } catch {
+      // Stop here rather than throw away the pages already fetched. The raw
+      // Next is not logged: it can carry a `d2lSessionVal=` token.
+      log("WARN", "Pagination stopped: Next link was not a valid URL", { firstPath });
+      return null;
+    }
     return `${url.pathname}${url.search}`;
   }
   // A Next that begins with a slash is already a path, not a bookmark.

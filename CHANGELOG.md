@@ -28,6 +28,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `fetchAllObjects()`, the `{ Objects, Next }` pager behind the paged classlist and quiz lists,
+  threw `TypeError: Invalid URL` when a page's `Next` started with `http://` or `https://` but
+  could not be parsed (`https://`, an unclosed `[` host, a host with a space), losing every page
+  already fetched. It now stops paginating, logs a WARN with the first path (not the raw `Next`,
+  which can carry a `d2lSessionVal=` token), and returns the objects collected so far. Ported from
+  [RohanMuppa/brightspace-mcp-server#325](https://github.com/RohanMuppa/brightspace-mcp-server/pull/325)
+  (fixes [RohanMuppa/brightspace-mcp-server#323](https://github.com/RohanMuppa/brightspace-mcp-server/issues/323)).
+
 - `getAssignments()` (`brightspace assignments`) treated a dropbox folder whose feedback request
   failed with a 403, a 5xx or a network error the same as one with no feedback yet: it logged the
   failure at DEBUG (a 403 not at all) and returned `feedback: null`, so a graded assignment whose
