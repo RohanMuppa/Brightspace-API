@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+
+vi.mock("../../src/utils/logger.js", () => ({ log: vi.fn() }));
+
+import { log } from "../../src/utils/logger.js";
 import { fetchAllObjects } from "../../src/api/paginate.js";
 
 /**
@@ -49,5 +53,28 @@ describe("fetchAllObjects Next shapes", () => {
 
     expect(all).toEqual(["a", "b"]);
     expect(requested[1]).toContain("bookmark=tok2");
+  });
+
+  it("keeps fetched pages when an absolute Next cannot be parsed", async () => {
+    for (const next of [
+      "https://",
+      "https://[bad/d2l/api/lp/1.0/1/classlist/paged/?d2lSessionVal=SECRET123",
+      "https://bad host/d2l/api/lp/1.0/1/classlist/paged/?d2lSessionVal=SECRET123",
+    ]) {
+      vi.mocked(log).mockClear();
+      const { apiClient, requested } = client(() => ({ Objects: ["a"], Next: next }));
+
+      const all = await fetchAllObjects<string>(
+        apiClient,
+        "/d2l/api/lp/1.0/1/classlist/paged/"
+      );
+
+      expect(all).toEqual(["a"]);
+      expect(requested).toEqual(["/d2l/api/lp/1.0/1/classlist/paged/"]);
+      expect(vi.mocked(log)).toHaveBeenCalled();
+      for (const call of vi.mocked(log).mock.calls) {
+        expect(JSON.stringify(call)).not.toContain("d2lSessionVal");
+      }
+    }
   });
 });
