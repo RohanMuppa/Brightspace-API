@@ -28,6 +28,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `loadConfig()` parsed `D2L_INCLUDE_COURSES` and `D2L_EXCLUDE_COURSES` with `parseInt` and
+  silently dropped anything that was not a number, so a list of course codes such as `CS180,MA261`
+  became an empty whitelist and every course was shown, `123456x` was read as `123456`, and a
+  value with no valid id still overrode `config.json`. Each entry must now be a positive whole
+  number; anything else is dropped with an `[config] Ignoring ...` warning naming the entry, empty
+  entries from a stray comma are skipped quietly, and a value with no valid id is ignored with a
+  warning so `config.json` applies, as `D2L_TOKEN_TTL` already does. Ported from
+  [RohanMuppa/brightspace-mcp-server#343](https://github.com/RohanMuppa/brightspace-mcp-server/pull/343)
+  (fixes [RohanMuppa/brightspace-mcp-server#342](https://github.com/RohanMuppa/brightspace-mcp-server/issues/342)).
+
 - `fetchAllObjects()`, the `{ Objects, Next }` pager behind the paged classlist and quiz lists,
   threw `TypeError: Invalid URL` when a page's `Next` started with `http://` or `https://` but
   could not be parsed (`https://`, an unclosed `[` host, a host with a space), losing every page
