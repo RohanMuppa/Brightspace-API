@@ -92,7 +92,7 @@ describe("AuthRunner", () => {
     expect(spawn).toHaveBeenCalledTimes(2);
   });
 
-  it.each([[2, "busy"], [3, "cooldown"], [4, "unsupported"], [5, "secureStorage"], [6, "transport"], [1, "failed"], [7, "cooldown"]])(
+  it.each([[2, "busy"], [3, "cooldown"], [4, "unsupported"], [5, "secureStorage"], [6, "transport"], [1, "failed"], [7, "cooldown"], [8, "browserInstall"], [9, "dependencyMissing"]])(
     "preserves child exit %s as a %s error", async (code, kind) => {
       const result = new AuthRunner().run();
       const failure = expect(result).rejects.toMatchObject({ kind });

@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { log } from "../utils/logger.js";
 import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
+import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "../utils/browser-install.js";
 import { AUTOMATIC_PENDING_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
 import { inspectLockOwner } from "./auth-lock.js";
 
@@ -154,7 +155,7 @@ const automaticPendingFailure = (relayed = false): AuthProcessError => new AuthP
   relayed,
 );
 
-export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress";
+export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress" | "browserInstall" | "dependencyMissing";
 
 export class AuthProcessError extends AuthError {
   constructor(
@@ -972,6 +973,8 @@ export class AuthRunner {
           finishChild();
         } else {
           const failures: Record<number, [AuthFailureKind, string]> = {
+            8: ["browserInstall", PLAYWRIGHT_INSTALL_HINT],
+            9: ["dependencyMissing", PLAYWRIGHT_DEPENDENCY_MISSING_HINT],
             2: ["busy", "Authentication already in progress in another process. Complete that attempt, then retry."],
             3: ["cooldown", `Automatic MFA is paused after an unsuccessful attempt. Run ${AUTH_COMMAND} to retry immediately.`],
             4: ["unsupported", "This identity provider cannot complete headless authentication. See the authentication logs."],
