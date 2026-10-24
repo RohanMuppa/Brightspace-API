@@ -28,6 +28,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Sign-in (`brightspace-auth`) failed with a generic "Authentication failed" if Chromium had been
+  removed after installation, e.g. by disk cleanup, even though this package's own Playwright
+  dependency could just redownload it. The browser launch now repairs a missing executable with
+  that same Playwright CLI and retries once, bounded by a two-minute download limit, before giving
+  up. A genuinely missing Playwright package (its code, not just the browser download) is reported
+  with its own reinstall instructions instead of being treated as a missing download, and an exit
+  code or `AuthFailureKind` for each case (`browserInstall`, `dependencyMissing`) keeps the two
+  distinct through `AuthRunner` and `toPublicError()`. Ported from
+  [RohanMuppa/brightspace-mcp-server#346](https://github.com/RohanMuppa/brightspace-mcp-server/pull/346)
+  (fixes [#74](https://github.com/RohanMuppa/Brightspace-API/issues/74)).
+
 - `loadConfig()` parsed `D2L_INCLUDE_COURSES` and `D2L_EXCLUDE_COURSES` with `parseInt` and
   silently dropped anything that was not a number, so a list of course codes such as `CS180,MA261`
   became an empty whitelist and every course was shown, `123456x` was read as `123456`, and a

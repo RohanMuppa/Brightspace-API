@@ -18,7 +18,7 @@ import { acquireProcessLock, AuthenticationInProgressError, inspectLockOwner } f
 import { authLockPath, publishAutomaticProgress, publishChallenge, relayChallenge } from "./mfa-challenge.js";
 import { AuthCooldown } from "./auth-cooldown.js";
 import { mintAccessToken } from "./token-mint.js";
-import { isMissingBrowserError, PLAYWRIGHT_INSTALL_HINT } from "../utils/browser-install.js";
+import { launchWithBrowserRecovery } from "../utils/browser-install.js";
 
 const SILENT_SSO_TIMEOUT_MS = 30000;
 const SILENT_SSO_POLL_MS = 1000;
@@ -147,20 +147,17 @@ export class BrowserAuth {
     };
     try {
       const state = await this.stateStore.load();
-      const { chromium } = await import("playwright");
       const args = ["--disable-blink-features=AutomationControlled"];
       if (BrowserAuth.isWSLOrDocker()) args.push("--no-sandbox", "--disable-setuid-sandbox");
       // Use Playwright's own timeout, which cleans up an unsuccessful launch.
-      try {
-        browser = await chromium.launch({ headless: this.config.headless, timeout: 60000, args });
-      } catch (launchError) {
-        // Keep the remedy attached to the failure. Without this the hint is
-        // lost when the auth runner flattens errors into "Authentication failed".
-        if (isMissingBrowserError(launchError)) {
-          throw new BrowserAuthError(PLAYWRIGHT_INSTALL_HINT, "browser_missing", launchError as Error);
-        }
-        throw launchError;
-      }
+      // A missing executable or missing Playwright package throws
+      // BrowserInstallError, keeping the remedy attached to the failure
+      // instead of being flattened into a generic "Authentication failed"
+      // further up.
+      browser = await launchWithBrowserRecovery(async () => {
+        const { chromium } = await import("playwright");
+        return chromium.launch({ headless: this.config.headless, timeout: 60000, args });
+      });
       process.once("SIGINT", closeOnSignal);
       process.once("SIGTERM", closeOnSignal);
       context = await browser.newContext({ viewport: { width: 1280, height: 720 }, storageState: state });

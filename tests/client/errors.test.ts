@@ -80,6 +80,22 @@ describe("toPublicError", () => {
     expect(error.message).not.toContain(SECRET);
   });
 
+  it("maps a browserInstall AuthProcessError to its own actionable guidance", () => {
+    const error = toPublicError(new AuthProcessError("browserInstall", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((error as { kind?: string }).kind).toBe("browserInstall");
+    expect(error.message).toContain("npx playwright install chromium");
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  it("maps a dependencyMissing AuthProcessError distinctly from a missing browser download", () => {
+    const error = toPublicError(new AuthProcessError("dependencyMissing", SECRET));
+    expect((error as { kind?: string }).kind).toBe("dependencyMissing");
+    expect(error.message).toContain("npm install -g");
+    expect(error.message).not.toContain("npx playwright install");
+    expect(error.message).not.toContain(SECRET);
+  });
+
   it("maps TokenRefreshError to BrightspaceNetworkError before the ApiError/NetworkError branches see it", () => {
     const error = toPublicError(new TokenRefreshError(SECRET));
     expect(error.code).toBe("BRIGHTSPACE_NETWORK");

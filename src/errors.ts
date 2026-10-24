@@ -11,6 +11,7 @@ import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { DownloadError, isSafeDetail, type DownloadFailureKind } from "./utils/download-errors.js";
 import { NoTranscriptError, TranscriptFetchError } from "./utils/transcript/errors.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
+import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "./utils/browser-install.js";
 
 /**
  * The public error contract. Every error that leaves the client facade or the
@@ -225,6 +226,8 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
   automaticPending:
     `Brightspace sign-in is answering its own verification code from the saved authenticator enrollment. ` +
     `No phone approval is being requested. ${AUTOMATIC_RETRY_GUIDANCE}`,
+  browserInstall: PLAYWRIGHT_INSTALL_HINT,
+  dependencyMissing: PLAYWRIGHT_DEPENDENCY_MISSING_HINT,
 };
 
 const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {
