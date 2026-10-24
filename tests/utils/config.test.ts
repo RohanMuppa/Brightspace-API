@@ -69,6 +69,23 @@ describe("resolved authentication configuration", () => {
     expect(fake.totp).toHaveBeenCalledWith("https://school.example", "alice");
   });
 
+  it("announces each credential-store lookup before awaiting it, without naming the account", async () => {
+    fake.store = { baseUrl: "https://school.example", username: "alice" };
+    const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+    const lines = () => printed.mock.calls.map((c) => c.join(" "));
+    let beforePassword: string[] = [];
+    let beforeTotp: string[] = [];
+    fake.password.mockImplementation(async () => { beforePassword = lines(); return "native-password"; });
+    fake.totp.mockImplementation(async () => { beforeTotp = lines(); return null; });
+    await loadConfig();
+    expect(beforePassword.at(-1)).toContain("Startup: reading the saved password from the OS credential store...");
+    expect(beforeTotp.at(-1)).toContain("Startup: reading the saved authenticator key from the OS credential store...");
+    const all = lines().join("\n");
+    expect(all).not.toContain("alice");
+    expect(all).not.toContain("native-password");
+    printed.mockRestore();
+  });
+
   it("reads no enrollment when no username is configured", async () => {
     fake.store = { baseUrl: "https://school.example" };
     expect(await loadConfig()).toMatchObject({ totpUri: undefined });
