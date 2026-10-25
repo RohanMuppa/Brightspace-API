@@ -28,6 +28,13 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Attribute values with an encoded ampersand were decoded twice: `&#38;lt;` (the text `&lt;`)
+  came out as `<`, so a link such as `href="?q=&#38;quot;x"` lost its literal `&quot;`.
+  `decodeEntities()` (used by `tagAttributes()`) now decodes every character reference in a single
+  pass, so a decoded `&` never starts another reference. Ported from
+  [RohanMuppa/brightspace-mcp-server#361](https://github.com/RohanMuppa/brightspace-mcp-server/pull/361)
+  (fixes [#79](https://github.com/RohanMuppa/Brightspace-API/issues/79)).
+
 - Sign-in (`brightspace-auth`) failed with a generic "Authentication failed" if Chromium had been
   removed after installation, e.g. by disk cleanup, even though this package's own Playwright
   dependency could just redownload it. The browser launch now repairs a missing executable with
