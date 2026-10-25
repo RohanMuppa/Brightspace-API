@@ -20,4 +20,15 @@ describe("html-attributes", () => {
     expect(attributes.get("href")).toBe("/d2l/a?b=1&c=2");
     expect(attributes.get("title")).toBe("&#99999999;");
   });
+
+  it("decodes each reference once, so an encoded ampersand stays literal (issue #79)", () => {
+    expect(decodeEntities("&#38;lt;b&#38;gt; &#x26;amp; &#38;quot; &amp;lt;")).toBe(
+      "&lt;b&gt; &amp; &quot; &lt;"
+    );
+  });
+
+  it("keeps an encoded ampersand literal inside an attribute value", () => {
+    const [attributes] = tagAttributes('<a href="/d2l/a?q=&#38;quot;x&amp;y=1">x</a>', "a");
+    expect(attributes.get("href")).toBe("/d2l/a?q=&quot;x&y=1");
+  });
 });
