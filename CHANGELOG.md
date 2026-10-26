@@ -28,6 +28,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- **Found in live testing:** while an earlier Microsoft Authenticator prompt for the account was
+  still open (missed, or its sign-in interrupted), Microsoft refused to send a new one
+  (`BeginAuth` answered `UserAuthFailedDuplicateRequest`, error 500121) and showed a "Verify your
+  identity" / "Sorry, we're having trouble verifying your account" page instead. `PurdueSSOFlow`
+  didn't recognize that page: it waited out its 5-minute MFA timeout and failed with the generic
+  "unsupported" guidance. It now recognizes the held page, asks Microsoft again through the
+  Authenticator option once a minute until the hold ends, and reports a new `mfaHeld`
+  `AuthFailureKind` (`AuthRunner`, `toPublicError()`) so a caller hears the real wait instead of
+  "still starting". The guidance for a pending approval also now says that a retry, or a call that
+  times out, does not send a new prompt — the sign-in keeps waiting on the one already sent — and
+  that a number that itself expires or is denied is reissued by the sign-in on its own. Ported from
+  [RohanMuppa/brightspace-mcp-server#354](https://github.com/RohanMuppa/brightspace-mcp-server/pull/354)
+  (fixes [#83](https://github.com/RohanMuppa/Brightspace-API/issues/83)).
+
 - Attribute values with an encoded ampersand were decoded twice: `&#38;lt;` (the text `&lt;`)
   came out as `<`, so a link such as `href="?q=&#38;quot;x"` lost its literal `&quot;`.
   `decodeEntities()` (used by `tagAttributes()`) now decodes every character reference in a single

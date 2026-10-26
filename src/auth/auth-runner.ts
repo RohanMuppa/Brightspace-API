@@ -13,7 +13,7 @@ import { log } from "../utils/logger.js";
 import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "../utils/browser-install.js";
-import { AUTOMATIC_PENDING_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
+import { AUTOMATIC_PENDING_MARKER, MFA_HELD_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
 import { inspectLockOwner } from "./auth-lock.js";
 
 /**
@@ -155,7 +155,17 @@ const automaticPendingFailure = (relayed = false): AuthProcessError => new AuthP
   relayed,
 );
 
-export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress" | "browserInstall" | "dependencyMissing";
+export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress" | "browserInstall" | "dependencyMissing" | "mfaHeld";
+
+/**
+ * Microsoft is refusing a new prompt for the account until an earlier one
+ * expires. Nothing is on the user's phone to approve, and calling again does
+ * not help sooner, so it is neither "approve now" nor "still starting".
+ */
+const mfaHeldFailure = (): AuthProcessError => new AuthProcessError(
+  "mfaHeld",
+  "Microsoft is holding a new prompt until an earlier one expires. Try again in a minute.",
+);
 
 export class AuthProcessError extends AuthError {
   constructor(
@@ -353,7 +363,7 @@ export class AuthRunner {
    * childDone. Lets a later joiner re-answer immediately instead of
    * discovering the challenge is stale only after blocking on childDone.
    */
-  private pendingChallenge: { kind: "mfaPending" | "automaticPending"; numberMatch?: string } | null = null;
+  private pendingChallenge: { kind: "mfaPending" | "automaticPending" | "mfaHeld"; numberMatch?: string } | null = null;
   /** Resolves on the next marker from the current child; null between children. */
   private challengeSignal: Promise<void> | null = null;
   /**
@@ -702,6 +712,10 @@ export class AuthRunner {
           reject(automaticPendingFailure());
           return;
         }
+        if (pending.kind === "mfaHeld") {
+          reject(mfaHeldFailure());
+          return;
+        }
         const numberMatch = pending.numberMatch ?? challenge.numberMatch;
         reject(new AuthProcessError(...mfaPendingFailure(numberMatch), numberMatch));
       }, pollMs);
@@ -762,6 +776,8 @@ export class AuthRunner {
       let relayed = false;
       /** The child reported it is answering its own code (see the marker below). */
       let automaticSeen = false;
+      /** Microsoft held back a new prompt at some point in this sign-in (MFA_HELD_MARKER). */
+      let heldSeen = false;
       /** watchAttention is armed once per child; a second timer could kill a live sign-in. */
       let attentionWatched = false;
       let abandonTimer: ReturnType<typeof setTimeout> | undefined;
@@ -860,7 +876,9 @@ export class AuthRunner {
         // An automatic sign-in that later shows a real approval challenge (it
         // fell back, or Entra changed its mind) must be upgraded, so a joiner
         // is told the number instead of "still working".
-        const firstChallenge = this.pendingChallenge === null || this.pendingChallenge.kind === "automaticPending";
+        // A hold is replaced by any real challenge, numbered or not.
+        const firstChallenge = this.pendingChallenge === null || this.pendingChallenge.kind === "automaticPending" ||
+          this.pendingChallenge.kind === "mfaHeld";
         startWatching();
         if (firstChallenge || matched) {
           this.pendingChallenge = { kind: "mfaPending", numberMatch: matched ?? this.pendingChallenge?.numberMatch };
@@ -889,6 +907,20 @@ export class AuthRunner {
         const answer = automaticPendingFailure(relayed);
         if (relayed) this.relayProbe = answer;
         settleCaller(answer);
+      };
+
+      /**
+       * Microsoft refused a new prompt while an earlier one is open. Answer
+       * the waiting caller now with the real wait; a number that appears
+       * later replaces this (it is published like any challenge).
+       */
+      const publishHeld = () => {
+        heldSeen = true;
+        if (this.pendingChallenge?.kind === "mfaPending") return;
+        this.pendingChallenge = { kind: "mfaHeld" };
+        startWatching();
+        resolveChallengeSignal();
+        settleCaller(mfaHeldFailure());
       };
 
       // Runs once the child is actually done. Settles the caller too, if an
@@ -936,6 +968,8 @@ export class AuthRunner {
           publishChallenge(undefined);
         } else if (line === AUTOMATIC_PENDING_MARKER) {
           publishAutomaticProgress();
+        } else if (line === MFA_HELD_MARKER) {
+          publishHeld();
         } else if (line === RELAYED_CHALLENGE_MARKER) {
           // Recorded as the line is read, so it is set before the challenge
           // marker that follows it settles the caller.
@@ -994,6 +1028,9 @@ export class AuthRunner {
           // Busy because another process's sign-in has not reached a
           // challenge yet: the caller can wait on it (see attendRelay).
           else if (code === 2 && relayed && this.sessionDir) failures[2] = ["inProgress", STILL_SIGNING_IN];
+          // Unsupported only because Microsoft held every new prompt until
+          // this sign-in ran out of time: the next call starts a fresh one.
+          if (code === 4 && heldSeen) failures[4] = ["mfaHeld", mfaHeldFailure().message];
           const [kind, message] = failures[code ?? -1] ?? ["failed", `Authentication failed. Run ${AUTH_COMMAND} to try again.`];
           kill("SIGKILL");
           const challenged = kind === "mfaPending" || kind === "automaticPending" || kind === "inProgress";
