@@ -14,7 +14,7 @@ import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "../utils/browser-install.js";
 import { AUTOMATIC_PENDING_MARKER, MFA_HELD_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
-import { inspectLockOwner } from "./auth-lock.js";
+import { inspectLockOwner, liveAutomaticOwner } from "./auth-lock.js";
 
 /**
  * Timeout for the auth process. It has to outlast the child's own MFA wait,
@@ -1039,4 +1039,63 @@ export class AuthRunner {
       });
     });
   }
+}
+
+/** How long stopAutomaticSignIn waits for the owner it SIGKILLed to exit. */
+const CANCEL_WAIT_MS = 5000;
+
+/**
+ * True when a `ps` command line is this package's background sign-in child:
+ * `auth-cli.js` as a whole path segment, followed later by a standalone
+ * `--automatic`. The runtime binary is not checked, since an app may run the
+ * server on an embedded runtime that isn't named node.
+ */
+export function isAutomaticSignInCommand(command: string): boolean {
+  return /(?:^|[\s/\\])auth-cli\.js\s(?:.*\s)?--automatic(?:\s|$)/.test(command.trim());
+}
+
+/** SIGKILL pid and its descendants (Chromium can lead its own process group). */
+function forceStop(pid: number): void {
+  try {
+    for (const descendant of descendantPids(pid)) {
+      try { process.kill(descendant, "SIGKILL"); } catch { /* Already exited. */ }
+    }
+  } catch { /* ps unavailable; still signal the owner itself below. */ }
+  try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ }
+}
+
+/**
+ * Stop a background sign-in that ANOTHER process on this computer started and
+ * that holds the cross-process lock, so `auth --logout` can cancel a sign-in
+ * whichever process began it. Only an "automatic" owner is stopped (a
+ * person's `auth` run in a terminal never is), and only after its command
+ * line confirms it is this package's sign-in child: the PID comes from a
+ * file, and a PID the system has since reused must never be killed. That
+ * check needs ps, so on Windows nothing is stopped and `auth --logout`
+ * reports the sign-in as one it cannot cancel. The dead owner leaves a stale
+ * lock the next lock holder reclaims. Resolves true once it has exited.
+ */
+export async function stopAutomaticSignIn(lockPath: string): Promise<boolean> {
+  if (process.platform === "win32") return false;
+  const pid = await liveAutomaticOwner(lockPath);
+  if (!pid) return false;
+  let command: string;
+  try {
+    command = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8", timeout: 1000,
+    });
+  } catch {
+    return false;
+  }
+  if (!isAutomaticSignInCommand(command)) return false;
+  log("WARN", `Cancelling another process's background sign-in (pid ${pid}) to sign out`);
+  forceStop(pid);
+  const deadline = Date.now() + CANCEL_WAIT_MS;
+  while (Date.now() < deadline) {
+    // Only "no such process" means it exited: EPERM is a live process this
+    // user cannot signal, which the SIGKILL did not stop either.
+    try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
 }

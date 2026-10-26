@@ -28,6 +28,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `auth --logout` refused whenever any sign-in held the lock and told the user to "Wait for it to
+  finish (or cancel it)". A terminal has no way to cancel a sign-in another process started in the
+  background, so the user was stuck until it ran out. `auth --logout` now stops a background
+  sign-in a script or AI app started for this session before clearing (new `stopAutomaticSignIn`
+  in `src/auth/auth-runner.ts` and `liveAutomaticOwner` in `src/auth/auth-lock.ts`), and says
+  Microsoft won't send a new prompt for up to 5 minutes. A person's `auth` run in another terminal
+  is still left alone, and so is any sign-in on Windows, where the underlying check is
+  unavailable. Ported from
+  [RohanMuppa/brightspace-mcp-server#369](https://github.com/RohanMuppa/brightspace-mcp-server/pull/369)
+  (fixes [#86](https://github.com/RohanMuppa/Brightspace-API/issues/86)).
+
 - **Found in live testing:** while an earlier Microsoft Authenticator prompt for the account was
   still open (missed, or its sign-in interrupted), Microsoft refused to send a new one
   (`BeginAuth` answered `UserAuthFailedDuplicateRequest`, error 500121) and showed a "Verify your
