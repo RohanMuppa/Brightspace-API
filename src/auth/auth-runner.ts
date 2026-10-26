@@ -12,8 +12,9 @@ import * as path from "node:path";
 import { log } from "../utils/logger.js";
 import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
-import { AUTOMATIC_PENDING_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
-import { inspectLockOwner } from "./auth-lock.js";
+import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "../utils/browser-install.js";
+import { AUTOMATIC_PENDING_MARKER, MFA_HELD_MARKER, RELAYED_CHALLENGE_MARKER, RELAYED_STARTING_MARKER, authLockPath, challengeRelayedAt, relayChallenge } from "./mfa-challenge.js";
+import { inspectLockOwner, liveAutomaticOwner } from "./auth-lock.js";
 
 /**
  * Timeout for the auth process. It has to outlast the child's own MFA wait,
@@ -154,7 +155,17 @@ const automaticPendingFailure = (relayed = false): AuthProcessError => new AuthP
   relayed,
 );
 
-export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress";
+export type AuthFailureKind = "busy" | "cooldown" | "unsupported" | "secureStorage" | "transport" | "timeout" | "failed" | "mfaPending" | "automaticPending" | "inProgress" | "browserInstall" | "dependencyMissing" | "mfaHeld";
+
+/**
+ * Microsoft is refusing a new prompt for the account until an earlier one
+ * expires. Nothing is on the user's phone to approve, and calling again does
+ * not help sooner, so it is neither "approve now" nor "still starting".
+ */
+const mfaHeldFailure = (): AuthProcessError => new AuthProcessError(
+  "mfaHeld",
+  "Microsoft is holding a new prompt until an earlier one expires. Try again in a minute.",
+);
 
 export class AuthProcessError extends AuthError {
   constructor(
@@ -352,7 +363,7 @@ export class AuthRunner {
    * childDone. Lets a later joiner re-answer immediately instead of
    * discovering the challenge is stale only after blocking on childDone.
    */
-  private pendingChallenge: { kind: "mfaPending" | "automaticPending"; numberMatch?: string } | null = null;
+  private pendingChallenge: { kind: "mfaPending" | "automaticPending" | "mfaHeld"; numberMatch?: string } | null = null;
   /** Resolves on the next marker from the current child; null between children. */
   private challengeSignal: Promise<void> | null = null;
   /**
@@ -701,6 +712,10 @@ export class AuthRunner {
           reject(automaticPendingFailure());
           return;
         }
+        if (pending.kind === "mfaHeld") {
+          reject(mfaHeldFailure());
+          return;
+        }
         const numberMatch = pending.numberMatch ?? challenge.numberMatch;
         reject(new AuthProcessError(...mfaPendingFailure(numberMatch), numberMatch));
       }, pollMs);
@@ -761,6 +776,8 @@ export class AuthRunner {
       let relayed = false;
       /** The child reported it is answering its own code (see the marker below). */
       let automaticSeen = false;
+      /** Microsoft held back a new prompt at some point in this sign-in (MFA_HELD_MARKER). */
+      let heldSeen = false;
       /** watchAttention is armed once per child; a second timer could kill a live sign-in. */
       let attentionWatched = false;
       let abandonTimer: ReturnType<typeof setTimeout> | undefined;
@@ -859,7 +876,9 @@ export class AuthRunner {
         // An automatic sign-in that later shows a real approval challenge (it
         // fell back, or Entra changed its mind) must be upgraded, so a joiner
         // is told the number instead of "still working".
-        const firstChallenge = this.pendingChallenge === null || this.pendingChallenge.kind === "automaticPending";
+        // A hold is replaced by any real challenge, numbered or not.
+        const firstChallenge = this.pendingChallenge === null || this.pendingChallenge.kind === "automaticPending" ||
+          this.pendingChallenge.kind === "mfaHeld";
         startWatching();
         if (firstChallenge || matched) {
           this.pendingChallenge = { kind: "mfaPending", numberMatch: matched ?? this.pendingChallenge?.numberMatch };
@@ -888,6 +907,20 @@ export class AuthRunner {
         const answer = automaticPendingFailure(relayed);
         if (relayed) this.relayProbe = answer;
         settleCaller(answer);
+      };
+
+      /**
+       * Microsoft refused a new prompt while an earlier one is open. Answer
+       * the waiting caller now with the real wait; a number that appears
+       * later replaces this (it is published like any challenge).
+       */
+      const publishHeld = () => {
+        heldSeen = true;
+        if (this.pendingChallenge?.kind === "mfaPending") return;
+        this.pendingChallenge = { kind: "mfaHeld" };
+        startWatching();
+        resolveChallengeSignal();
+        settleCaller(mfaHeldFailure());
       };
 
       // Runs once the child is actually done. Settles the caller too, if an
@@ -935,6 +968,8 @@ export class AuthRunner {
           publishChallenge(undefined);
         } else if (line === AUTOMATIC_PENDING_MARKER) {
           publishAutomaticProgress();
+        } else if (line === MFA_HELD_MARKER) {
+          publishHeld();
         } else if (line === RELAYED_CHALLENGE_MARKER) {
           // Recorded as the line is read, so it is set before the challenge
           // marker that follows it settles the caller.
@@ -972,6 +1007,8 @@ export class AuthRunner {
           finishChild();
         } else {
           const failures: Record<number, [AuthFailureKind, string]> = {
+            8: ["browserInstall", PLAYWRIGHT_INSTALL_HINT],
+            9: ["dependencyMissing", PLAYWRIGHT_DEPENDENCY_MISSING_HINT],
             2: ["busy", "Authentication already in progress in another process. Complete that attempt, then retry."],
             3: ["cooldown", `Automatic MFA is paused after an unsuccessful attempt. Run ${AUTH_COMMAND} to retry immediately.`],
             4: ["unsupported", "This identity provider cannot complete headless authentication. See the authentication logs."],
@@ -991,6 +1028,9 @@ export class AuthRunner {
           // Busy because another process's sign-in has not reached a
           // challenge yet: the caller can wait on it (see attendRelay).
           else if (code === 2 && relayed && this.sessionDir) failures[2] = ["inProgress", STILL_SIGNING_IN];
+          // Unsupported only because Microsoft held every new prompt until
+          // this sign-in ran out of time: the next call starts a fresh one.
+          if (code === 4 && heldSeen) failures[4] = ["mfaHeld", mfaHeldFailure().message];
           const [kind, message] = failures[code ?? -1] ?? ["failed", `Authentication failed. Run ${AUTH_COMMAND} to try again.`];
           kill("SIGKILL");
           const challenged = kind === "mfaPending" || kind === "automaticPending" || kind === "inProgress";
@@ -999,4 +1039,63 @@ export class AuthRunner {
       });
     });
   }
+}
+
+/** How long stopAutomaticSignIn waits for the owner it SIGKILLed to exit. */
+const CANCEL_WAIT_MS = 5000;
+
+/**
+ * True when a `ps` command line is this package's background sign-in child:
+ * `auth-cli.js` as a whole path segment, followed later by a standalone
+ * `--automatic`. The runtime binary is not checked, since an app may run the
+ * server on an embedded runtime that isn't named node.
+ */
+export function isAutomaticSignInCommand(command: string): boolean {
+  return /(?:^|[\s/\\])auth-cli\.js\s(?:.*\s)?--automatic(?:\s|$)/.test(command.trim());
+}
+
+/** SIGKILL pid and its descendants (Chromium can lead its own process group). */
+function forceStop(pid: number): void {
+  try {
+    for (const descendant of descendantPids(pid)) {
+      try { process.kill(descendant, "SIGKILL"); } catch { /* Already exited. */ }
+    }
+  } catch { /* ps unavailable; still signal the owner itself below. */ }
+  try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ }
+}
+
+/**
+ * Stop a background sign-in that ANOTHER process on this computer started and
+ * that holds the cross-process lock, so `auth --logout` can cancel a sign-in
+ * whichever process began it. Only an "automatic" owner is stopped (a
+ * person's `auth` run in a terminal never is), and only after its command
+ * line confirms it is this package's sign-in child: the PID comes from a
+ * file, and a PID the system has since reused must never be killed. That
+ * check needs ps, so on Windows nothing is stopped and `auth --logout`
+ * reports the sign-in as one it cannot cancel. The dead owner leaves a stale
+ * lock the next lock holder reclaims. Resolves true once it has exited.
+ */
+export async function stopAutomaticSignIn(lockPath: string): Promise<boolean> {
+  if (process.platform === "win32") return false;
+  const pid = await liveAutomaticOwner(lockPath);
+  if (!pid) return false;
+  let command: string;
+  try {
+    command = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8", timeout: 1000,
+    });
+  } catch {
+    return false;
+  }
+  if (!isAutomaticSignInCommand(command)) return false;
+  log("WARN", `Cancelling another process's background sign-in (pid ${pid}) to sign out`);
+  forceStop(pid);
+  const deadline = Date.now() + CANCEL_WAIT_MS;
+  while (Date.now() < deadline) {
+    // Only "no such process" means it exited: EPERM is a live process this
+    // user cannot signal, which the SIGKILL did not stop either.
+    try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
 }

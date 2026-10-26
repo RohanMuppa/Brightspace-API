@@ -12,9 +12,10 @@ import { MfaApprovalError } from "./auth/sso-flow.js";
 import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { retireLegacyProfile } from "./auth/legacy-profile.js";
 import { AuthenticationInProgressError } from "./auth/auth-lock.js";
-import { AUTOMATIC_PENDING_MARKER, challengeMarker, relayedLockLines } from "./auth/mfa-challenge.js";
+import { AUTOMATIC_PENDING_MARKER, MFA_HELD_MARKER, challengeMarker, relayedLockLines } from "./auth/mfa-challenge.js";
 import { runLogout } from "./auth/logout.js";
 import { AUTH_COMMAND, SETUP_COMMAND } from "./utils/commands.js";
+import { BrowserInstallError } from "./utils/browser-install.js";
 
 dotenv.config({ quiet: true });
 const pkg = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
@@ -68,7 +69,10 @@ async function main(): Promise<void> {
     const onAutomaticPending = automatic
       ? () => console.log(AUTOMATIC_PENDING_MARKER)
       : undefined;
-    await new BrowserAuth(config, { requestMfaCode: codePrompt, onMfaChallenge, onAutomaticPending }).authenticate({
+    // Microsoft refused a new prompt until an earlier one expires: the parent
+    // says so instead of "still starting". A terminal run reads the log line.
+    const onMfaHeld = automatic ? () => console.log(MFA_HELD_MARKER) : undefined;
+    await new BrowserAuth(config, { requestMfaCode: codePrompt, onMfaChallenge, onAutomaticPending, onMfaHeld }).authenticate({
       automatic,
       onAuthenticated: async (token) => {
         await tokenManager.setToken(token);
@@ -97,15 +101,18 @@ async function main(): Promise<void> {
     if (automatic && error instanceof AuthenticationInProgressError) {
       for (const line of relayedLockLines(error.challenge, error.ownerMode)) console.log(line);
     }
-    process.exitCode = error instanceof NativeCredentialStoreError ? 5
+    process.exitCode = error instanceof BrowserInstallError ? (error.dependencyMissing ? 9 : 8)
+      : error instanceof NativeCredentialStoreError ? 5
       : code === "AUTH_IN_PROGRESS" ? 2
       : code === "AUTH_COOLDOWN" ? 3
       : code === "AUTH_UNSUPPORTED" ? 4
       : code === "AUTH_TRANSPORT" ? 6
       : error instanceof MfaApprovalError ? 7 : 1;
     console.error("\nAuthentication failed:", error instanceof Error ? error.message : "Unknown authentication error");
-    console.error(`Run \`${SETUP_COMMAND}\` to update saved credentials.`);
-    console.error(`Run \`${AUTH_COMMAND}\` to retry explicitly. This bypasses the automatic MFA cooldown.`);
+    if (!(error instanceof BrowserInstallError)) {
+      console.error(`Run \`${SETUP_COMMAND}\` to update saved credentials.`);
+      console.error(`Run \`${AUTH_COMMAND}\` to retry explicitly. This bypasses the automatic MFA cooldown.`);
+    }
   }
 }
 

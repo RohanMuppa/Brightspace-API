@@ -4,15 +4,24 @@
  * Licensed under MIT — see LICENSE file for details.
  */
 
-/** Decode the character references Brightspace's HTML editor writes into attribute values. */
+/** A numeric reference as its character, or left as written when it names no code point (issue #72). */
+function codePoint(whole: string, code: number): string {
+  return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+}
+
+const NAMED: Record<string, string> = { quot: '"', lt: "<", gt: ">", amp: "&" };
+
+/**
+ * Decode the character references Brightspace's HTML editor writes into
+ * attribute values, in one pass so a decoded `&` never starts another
+ * reference: `&#38;lt;` is the text `&lt;`, not `<` (issue #79).
+ */
 export function decodeEntities(value: string): string {
-  return value
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(parseInt(dec, 10)))
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+  return value.replace(/&(?:#[xX]([0-9a-fA-F]+)|#(\d+)|(quot|lt|gt|amp));/g, (whole, hex?: string, dec?: string, name?: string) => {
+    if (hex !== undefined) return codePoint(whole, parseInt(hex, 16));
+    if (dec !== undefined) return codePoint(whole, parseInt(dec, 10));
+    return NAMED[name!];
+  });
 }
 
 /**

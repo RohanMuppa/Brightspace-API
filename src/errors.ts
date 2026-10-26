@@ -11,6 +11,7 @@ import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { DownloadError, isSafeDetail, type DownloadFailureKind } from "./utils/download-errors.js";
 import { NoTranscriptError, TranscriptFetchError } from "./utils/transcript/errors.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
+import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "./utils/browser-install.js";
 
 /**
  * The public error contract. Every error that leaves the client facade or the
@@ -68,10 +69,25 @@ const MFA_SOLO_CALL =
   "Don't run other Brightspace calls in parallel until the sign-in completes: a batched " +
   "answer can reach the user too late to approve. Make one call at a time.";
 
+/**
+ * What a retry, or a call that timed out, does to the prompt on the user's
+ * phone. Without this a caller could be told that a retry sends a new push:
+ * it instead joins the background sign-in, and only a number that itself
+ * expires or is denied (see MFA_NEW_NUMBER) is replaced.
+ */
+const MFA_SAME_PROMPT =
+  "Calling again doesn't send a new prompt, and neither does a call timing out: the sign-in " +
+  "keeps waiting, for up to 5 minutes, on the prompt already sent.";
+
+/** Entra number match only: purdue-sso.ts asks for another request when one expires or is denied. */
+const MFA_NEW_NUMBER =
+  "If Microsoft's number expires or is denied, the sign-in asks Microsoft for a new one by itself " +
+  "and the next answer carries it; always use the latest.";
+
 const MFA_RETRY_GUIDANCE =
-  "Retry right away without waiting: the sign-in is finishing in the background, and each retry waits up to " +
-  "45 seconds for the approval and returns the result as soon as the sign-in completes. Keep retrying until it " +
-  `succeeds or fails with a different error. ${MFA_SOLO_CALL}`;
+  `${MFA_SAME_PROMPT} ${MFA_NEW_NUMBER} Retry right away without waiting: the sign-in is finishing in the ` +
+  "background, and each retry waits up to 45 seconds for the approval and returns the result as soon as the " +
+  `sign-in completes. Keep retrying until it succeeds or fails with a different error. ${MFA_SOLO_CALL}`;
 
 /**
  * Another call in the same parallel batch already carried this exact
@@ -225,6 +241,19 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
   automaticPending:
     `Brightspace sign-in is answering its own verification code from the saved authenticator enrollment. ` +
     `No phone approval is being requested. ${AUTOMATIC_RETRY_GUIDANCE}`,
+  // Found in live testing on Purdue's tenant (2026-10-25): while an earlier
+  // Authenticator prompt for the account is still open (missed, or its
+  // sign-in was interrupted), Microsoft refuses a new one
+  // (UserAuthFailedDuplicateRequest) and shows a "Verify your identity" list
+  // instead. There is nothing to approve right now, and the sign-in asks
+  // Microsoft again on its own every minute.
+  mfaHeld:
+    "Microsoft is holding an earlier sign-in prompt for this account and won't send a new prompt until that one " +
+    "expires, up to 5 minutes after it was sent. There is nothing to approve right now, and the earlier number " +
+    "no longer works. The sign-in asks Microsoft again every minute; retry right away and keep retrying until it " +
+    "succeeds or reports a different error.",
+  browserInstall: PLAYWRIGHT_INSTALL_HINT,
+  dependencyMissing: PLAYWRIGHT_DEPENDENCY_MISSING_HINT,
 };
 
 const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {

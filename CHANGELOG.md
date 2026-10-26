@@ -38,6 +38,49 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `auth --logout` refused whenever any sign-in held the lock and told the user to "Wait for it to
+  finish (or cancel it)". A terminal has no way to cancel a sign-in another process started in the
+  background, so the user was stuck until it ran out. `auth --logout` now stops a background
+  sign-in a script or AI app started for this session before clearing (new `stopAutomaticSignIn`
+  in `src/auth/auth-runner.ts` and `liveAutomaticOwner` in `src/auth/auth-lock.ts`), and says
+  Microsoft won't send a new prompt for up to 5 minutes. A person's `auth` run in another terminal
+  is still left alone, and so is any sign-in on Windows, where the underlying check is
+  unavailable. Ported from
+  [RohanMuppa/brightspace-mcp-server#369](https://github.com/RohanMuppa/brightspace-mcp-server/pull/369)
+  (fixes [#86](https://github.com/RohanMuppa/Brightspace-API/issues/86)).
+
+- **Found in live testing:** while an earlier Microsoft Authenticator prompt for the account was
+  still open (missed, or its sign-in interrupted), Microsoft refused to send a new one
+  (`BeginAuth` answered `UserAuthFailedDuplicateRequest`, error 500121) and showed a "Verify your
+  identity" / "Sorry, we're having trouble verifying your account" page instead. `PurdueSSOFlow`
+  didn't recognize that page: it waited out its 5-minute MFA timeout and failed with the generic
+  "unsupported" guidance. It now recognizes the held page, asks Microsoft again through the
+  Authenticator option once a minute until the hold ends, and reports a new `mfaHeld`
+  `AuthFailureKind` (`AuthRunner`, `toPublicError()`) so a caller hears the real wait instead of
+  "still starting". The guidance for a pending approval also now says that a retry, or a call that
+  times out, does not send a new prompt — the sign-in keeps waiting on the one already sent — and
+  that a number that itself expires or is denied is reissued by the sign-in on its own. Ported from
+  [RohanMuppa/brightspace-mcp-server#354](https://github.com/RohanMuppa/brightspace-mcp-server/pull/354)
+  (fixes [#83](https://github.com/RohanMuppa/Brightspace-API/issues/83)).
+
+- Attribute values with an encoded ampersand were decoded twice: `&#38;lt;` (the text `&lt;`)
+  came out as `<`, so a link such as `href="?q=&#38;quot;x"` lost its literal `&quot;`.
+  `decodeEntities()` (used by `tagAttributes()`) now decodes every character reference in a single
+  pass, so a decoded `&` never starts another reference. Ported from
+  [RohanMuppa/brightspace-mcp-server#361](https://github.com/RohanMuppa/brightspace-mcp-server/pull/361)
+  (fixes [#79](https://github.com/RohanMuppa/Brightspace-API/issues/79)).
+
+- Sign-in (`brightspace-auth`) failed with a generic "Authentication failed" if Chromium had been
+  removed after installation, e.g. by disk cleanup, even though this package's own Playwright
+  dependency could just redownload it. The browser launch now repairs a missing executable with
+  that same Playwright CLI and retries once, bounded by a two-minute download limit, before giving
+  up. A genuinely missing Playwright package (its code, not just the browser download) is reported
+  with its own reinstall instructions instead of being treated as a missing download, and an exit
+  code or `AuthFailureKind` for each case (`browserInstall`, `dependencyMissing`) keeps the two
+  distinct through `AuthRunner` and `toPublicError()`. Ported from
+  [RohanMuppa/brightspace-mcp-server#346](https://github.com/RohanMuppa/brightspace-mcp-server/pull/346)
+  (fixes [#74](https://github.com/RohanMuppa/Brightspace-API/issues/74)).
+
 - `loadConfig()` parsed `D2L_INCLUDE_COURSES` and `D2L_EXCLUDE_COURSES` with `parseInt` and
   silently dropped anything that was not a number, so a list of course codes such as `CS180,MA261`
   became an empty whitelist and every course was shown, `123456x` was read as `123456`, and a

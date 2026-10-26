@@ -80,6 +80,48 @@ describe("toPublicError", () => {
     expect(error.message).not.toContain(SECRET);
   });
 
+  it("maps a browserInstall AuthProcessError to its own actionable guidance", () => {
+    const error = toPublicError(new AuthProcessError("browserInstall", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((error as { kind?: string }).kind).toBe("browserInstall");
+    expect(error.message).toContain("npx playwright install chromium");
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  // A model once told a user that a call timing out would make the server
+  // send a new push. A retry joins the background sign-in, so the guidance
+  // has to say what a retry does to the prompt. Live on Purdue's tenant
+  // (2026-10-25), Microsoft also asks itself for a new number-match number
+  // when one expires or is denied, so the guidance must say to use the latest.
+  it.each([undefined, "47"])("says a retry sends no new prompt and a new number can arrive on its own (number: %s)", (numberMatch) => {
+    const error = toPublicError(new AuthProcessError("mfaPending", SECRET, numberMatch));
+    expect(error.message).toContain("Calling again doesn't send a new prompt, and neither does a call timing out");
+    expect(error.message).toContain("asks Microsoft for a new one by itself");
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  // Found in live testing on Purdue's tenant (2026-10-25): while an earlier
+  // Authenticator prompt for the account is still open (missed, or its
+  // sign-in cancelled), Microsoft refuses a new one
+  // (UserAuthFailedDuplicateRequest) and shows a "Verify your identity" list
+  // instead. mfaHeld reports that real wait, not "still starting".
+  it("maps an mfaHeld AuthProcessError to a retryable BrightspaceAuthFailedError", () => {
+    const error = toPublicError(new AuthProcessError("mfaHeld", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((error as { kind?: string }).kind).toBe("mfaHeld");
+    expect(error.message).toContain("holding");
+    expect(error.message).toContain("up to 5 minutes");
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  it("maps a dependencyMissing AuthProcessError distinctly from a missing browser download", () => {
+    const error = toPublicError(new AuthProcessError("dependencyMissing", SECRET));
+    expect((error as { kind?: string }).kind).toBe("dependencyMissing");
+    expect(error.message).toContain("npm install -g");
+    expect(error.message).not.toContain("npx playwright install");
+    expect(error.message).not.toContain(SECRET);
+  });
+
   it("maps TokenRefreshError to BrightspaceNetworkError before the ApiError/NetworkError branches see it", () => {
     const error = toPublicError(new TokenRefreshError(SECRET));
     expect(error.code).toBe("BRIGHTSPACE_NETWORK");
