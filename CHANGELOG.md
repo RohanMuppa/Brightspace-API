@@ -7,6 +7,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- `loadConfig()` printed nothing while reading the saved password or authenticator key from the
+  OS credential store, so a caller that stalled there looked identical to one stalled anywhere
+  else. Both lookups are now wrapped in the new `startupPhase()` (`src/utils/startup-phase.ts`),
+  which logs a timestamped `Startup: <name>...` line before the lookup, `done in N ms` or
+  `failed after N ms` after it, and a single `Startup: still <name> after 10 s` warning if it is
+  still running at 10 seconds. Phase names are fixed strings; no username, URL, password, cookie,
+  or token is ever logged. Ported from
+  [RohanMuppa/brightspace-mcp-server#313](https://github.com/RohanMuppa/brightspace-mcp-server/pull/313)
+  (fixes [#67](https://github.com/RohanMuppa/Brightspace-API/issues/67)).
+
 - `downloadFile()` can now fetch a file an instructor linked by path inside a module description
   instead of adding as a content topic, via the new `coursePath` argument (a course file path such
   as `Notes/Lecture 1.pdf`, or the `quickLink.d2l?...type=coursefile` URL). `get_course_content`'s
