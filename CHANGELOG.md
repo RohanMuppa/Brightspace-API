@@ -38,6 +38,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- Reading a DOCX, XLSX, or PPTX attachment inflated its ZIP entries with no size limit, so a small
+  crafted attachment (a ZIP bomb) could inflate to gigabytes, block the event loop, and then throw
+  past V8's string limit or run out of heap. `src/utils/zip-extract.ts` now refuses an entry whose
+  declared size is over the limit, passes `maxOutputLength` to `inflateRawSync` so a header that
+  understates its size is caught too, and has `officeDocumentText()` share one 32 MB budget
+  (`MAX_INFLATED_BYTES`) across every entry it reads, so a PPTX cannot spread the payload across
+  many slides. Over the limit, the document yields no text and the attachment reader reports "No
+  readable text found". Ported from
+  [RohanMuppa/brightspace-mcp-server#382](https://github.com/RohanMuppa/brightspace-mcp-server/pull/382)
+  (fixes [RohanMuppa/brightspace-mcp-server#380](https://github.com/RohanMuppa/brightspace-mcp-server/issues/380)).
+
 - `auth --logout` refused whenever any sign-in held the lock and told the user to "Wait for it to
   finish (or cancel it)". A terminal has no way to cancel a sign-in another process started in the
   background, so the user was stuck until it ran out. `auth --logout` now stops a background
