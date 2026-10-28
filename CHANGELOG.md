@@ -38,6 +38,15 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `tagAttributes()` (`src/utils/html-attributes.ts`) ended an element at its first `>`, even one
+  inside a quoted attribute value, so `<a title="Week 1 > Notes" href="...">` lost its `href` and
+  every later attribute. A link like that was missing from a module's `courseFiles` in
+  `getCourseContent()`, and the same truncation affected LTI launch forms read by the transcript
+  code. An element now ends at the first `>` outside a quoted value; a tag with an unbalanced or
+  stray quote still ends at its first `>`, as before. Ported from
+  [RohanMuppa/brightspace-mcp-server#378](https://github.com/RohanMuppa/brightspace-mcp-server/pull/378)
+  (fixes [RohanMuppa/brightspace-mcp-server#376](https://github.com/RohanMuppa/brightspace-mcp-server/issues/376)).
+
 - Reading a DOCX, XLSX, or PPTX attachment inflated its ZIP entries with no size limit, so a small
   crafted attachment (a ZIP bomb) could inflate to gigabytes, block the event loop, and then throw
   past V8's string limit or run out of heap. `src/utils/zip-extract.ts` now refuses an entry whose

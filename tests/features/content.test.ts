@@ -342,6 +342,12 @@ describe("getCourseContent courseFiles", () => {
     expect(await courseFilesFor(lti + other)).toBeUndefined();
   });
 
+  it("lists a link whose title contains > (brightspace-mcp-server#376)", async () => {
+    const html = `<a title="Week 1 > Notes" href="/d2l/common/dialogs/quickLink/quickLink.d2l?ou=101&amp;type=coursefile&amp;fileId=Notes%2fweek1.pdf">x</a>`;
+
+    expect(await courseFilesFor(html)).toEqual(["Notes/week1.pdf"]);
+  });
+
   it("drops paths that parseCoursePath would refuse", async () => {
     expect(await courseFilesFor(link("..%2fsecret.pdf") + link("Notes%2fok.pdf"))).toEqual(["Notes/ok.pdf"]);
   });
