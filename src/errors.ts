@@ -226,6 +226,8 @@ const AUTH_FAILURE_GUIDANCE: Record<AuthFailureKind, string> = {
     "Unlock the keychain or keyring, then retry.",
   transport:
     "Brightspace could not be reached to sign in. The saved session was kept. Check the connection and retry in a few minutes.",
+  stuck:
+    "Sign-in got stuck on the school's sign-in page and stopped; the saved session was kept. Retry — it already retries once automatically.",
   timeout:
     "The sign-in did not finish in time, usually a missed MFA prompt. " +
     `Run \`${AUTH_COMMAND}\` in a terminal (from your home folder) to complete it with the number visible.`,
