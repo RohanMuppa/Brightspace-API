@@ -114,6 +114,18 @@ describe("toPublicError", () => {
     expect(error.message).not.toContain(SECRET);
   });
 
+  // The school's sign-in page never settled on anything the sign-in could act
+  // on (BrowserAuthStuckError): Brightspace was reachable, so this is not a
+  // network failure, and AuthRunner already retried it once by itself.
+  it("maps a stuck AuthProcessError to its own guidance, not the transport one", () => {
+    const error = toPublicError(new AuthProcessError("stuck", SECRET));
+    expect(error.code).toBe("BRIGHTSPACE_AUTH_FAILED");
+    expect((error as { kind?: string }).kind).toBe("stuck");
+    expect(error.message).toContain("stuck");
+    expect(error.message).not.toContain("network");
+    expect(error.message).not.toContain(SECRET);
+  });
+
   it("maps a dependencyMissing AuthProcessError distinctly from a missing browser download", () => {
     const error = toPublicError(new AuthProcessError("dependencyMissing", SECRET));
     expect((error as { kind?: string }).kind).toBe("dependencyMissing");

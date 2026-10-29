@@ -38,6 +38,21 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- A sign-in page that redirected while `BrowserAuth` was reading it (Playwright's "Execution
+  context was destroyed", "Cannot find context", "frame was detached") was reported as
+  Brightspace being unreachable, even though the network was fine; the session check right after
+  a sign-in could fail the same way on a login the user had just approved. These races are now
+  polled past instead of thrown, and the check right after a sign-in re-reads the page once if it
+  navigated mid-read. A sign-in page that truly never settles now gets its own `BrowserAuthStuckError`
+  (`AUTH_STUCK`, exit code 10, failure kind `"stuck"`) instead of being folded into the generic
+  transport failure, and `AuthRunner` retries a stuck child once by itself, but only when it never
+  showed the user an MFA number or held prompt, so a retry can never send a second MFA prompt. New
+  `src/auth/auth-exit-code.ts` and `src/auth/error-cause.ts` share the exit-code mapping and log a
+  `caused by:` line (first line only, URLs cut to their origin) per error cause so `auth-cli`'s
+  `Authentication failed:` line shows what actually broke. Ported from
+  [RohanMuppa/brightspace-mcp-server#385](https://github.com/RohanMuppa/brightspace-mcp-server/pull/385)
+  (fixes [#92](https://github.com/RohanMuppa/Brightspace-API/issues/92)).
+
 - `tagAttributes()` (`src/utils/html-attributes.ts`) ended an element at its first `>`, even one
   inside a quoted attribute value, so `<a title="Week 1 > Notes" href="...">` lost its `href` and
   every later attribute. A link like that was missing from a module's `courseFiles` in
