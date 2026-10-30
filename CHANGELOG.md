@@ -38,6 +38,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getRoster` without `includeStudents` fetches the instructors (role 109) and the TAs (role 135)
+  in parallel, but a route that failed was only logged at WARN, so a 500 on the TA route returned
+  the instructors alone and read as "this course has no TAs". A role route that fails with anything
+  but a 403 (a 404, a 5xx, a dropped connection) now adds that role to a new `unavailable` field
+  (`RosterStaffRole[]`: `"instructors"`, `"TAs"`) and a `notice` saying those roles may be missing
+  and must not be reported as empty. The success shape is unchanged and both fields are absent when
+  every role was read; a 403 still adds nothing. A sign-in problem (unrecovered 401, pending MFA
+  sign-in, token refresh failure) on either route now fails the whole call, as `getAssignments`
+  does, instead of returning a partial or empty roster. Ported from
+  [RohanMuppa/brightspace-mcp-server#389](https://github.com/RohanMuppa/brightspace-mcp-server/pull/389)
+  (fixes [RohanMuppa/brightspace-mcp-server#388](https://github.com/RohanMuppa/brightspace-mcp-server/issues/388)).
+
 - A sign-in page that redirected while `BrowserAuth` was reading it (Playwright's "Execution
   context was destroyed", "Cannot find context", "frame was detached") was reported as
   Brightspace being unreachable, even though the network was fine; the session check right after

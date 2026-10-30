@@ -203,7 +203,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` |
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
-| `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` |
+| `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
 | `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` |
 | `getVideoTranscript(args)` | `GetVideoTranscriptArgs` — `courseId?`, `topicId?`, `videoUrl?`, `offset?` (default 0), `maxChars?` (default 12000) | `VideoTranscriptResult` |
 | `getInfo()` | — | `ClientInfo` |
@@ -230,6 +230,13 @@ feedback could not be read (a 403, a 5xx, a network error; a 404 just means no f
 a `quizzesUnavailable` field of the same shape, on the single-course result or on its entry in
 `courses`: its quizzes are then only those found through the course content, and others may be
 missing. Both fields are absent when the read succeeded.
+
+`getRoster` without `includeStudents` reads the instructors and the TAs on separate routes. When
+one of them could not be read (a 404, a 5xx, a network error), the result lists whoever was read
+plus an `unavailable` field naming the missing roles (`"instructors"`, `"TAs"`) and a `notice`
+saying they may be missing, so a roster with no TAs there means "unknown", not "no TAs". Both are
+absent when every role was read. A 403 is still skipped quietly, and a sign-in problem throws, as
+in `getAssignments`.
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,

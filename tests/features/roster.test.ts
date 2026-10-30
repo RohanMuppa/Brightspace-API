@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { getRoster } from "../../src/features/roster.js";
 import type { FeatureContext } from "../../src/features/context.js";
+import { ApiError, NetworkError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 
 /**
  * The roster reads the same paged classlist endpoint, so it dropped users past
@@ -85,5 +87,92 @@ describe("getRoster truncation", () => {
 
     expect(result.returned).toBe(250);
     expect(result.truncated).toBe(true);
+  });
+});
+
+/**
+ * In the default staff view a role route that failed for any reason was only
+ * logged, so a 500 on the TA route returned the instructors alone and read as
+ * "this course has no TAs" (port of brightspace-mcp-server#388). The result
+ * now names the roles that could not be read.
+ */
+describe("getRoster when a role route fails", () => {
+  const serverError = () => new ApiError(500, "/classlist", "Internal Server Error");
+  const staff = (name: string) => ({ ...user(name), ClasslistRoleDisplayName: "Instructor" });
+
+  it("marks TAs unavailable when the TA route fails with a 5xx", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("roleId=135")) throw serverError();
+      return { Objects: [staff("prof")], Next: null };
+    });
+
+    const result = await getRoster(ctx, { courseId: COURSE_ID });
+
+    expect(result.users.map((u) => u.name)).toEqual(["prof"]);
+    expect(result.unavailable).toEqual(["TAs"]);
+    expect(result.notice).toMatch(/TAs .*could not be read/);
+    expect(result.notice).toMatch(/no TAs/);
+  });
+
+  it("marks instructors unavailable when the instructor route drops the connection", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("roleId=109")) throw new NetworkError("socket hang up");
+      return { Objects: [staff("ta")], Next: null };
+    });
+
+    const result = await getRoster(ctx, { courseId: COURSE_ID });
+
+    expect(result.users.map((u) => u.name)).toEqual(["ta"]);
+    expect(result.unavailable).toEqual(["instructors"]);
+  });
+
+  it("names both roles when both routes fail", async () => {
+    const { ctx } = setup(() => {
+      throw serverError();
+    });
+
+    const result = await getRoster(ctx, { courseId: COURSE_ID });
+
+    expect(result.users).toEqual([]);
+    expect(result.unavailable).toEqual(["instructors", "TAs"]);
+    expect(result.notice).toContain("instructors and TAs");
+    expect(result.notice).toContain("no instructors or TAs");
+  });
+
+  it("stays quiet on a 403, which means the role list is restricted", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("roleId=135")) throw new ApiError(403, "/classlist", "Forbidden");
+      return { Objects: [staff("prof")], Next: null };
+    });
+
+    const result = await getRoster(ctx, { courseId: COURSE_ID });
+
+    expect(result.users.map((u) => u.name)).toEqual(["prof"]);
+    expect(result).not.toHaveProperty("unavailable");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("adds nothing when both routes succeed", async () => {
+    const { ctx } = setup((path) =>
+      path.includes("roleId=109") ? { Objects: [staff("prof")], Next: null } : { Objects: [], Next: null },
+    );
+
+    const result = await getRoster(ctx, { courseId: COURSE_ID });
+
+    expect(result.users.map((u) => u.name)).toEqual(["prof"]);
+    expect(result).not.toHaveProperty("unavailable");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it.each([
+    ["an unrecovered 401", new ApiError(401, "/classlist", "expired")],
+    ["a pending MFA sign-in", new AuthProcessError("mfaPending", "MFA approval pending")],
+  ])("throws instead of returning a partial roster on %s", async (_label, error) => {
+    const { ctx } = setup((path) => {
+      if (path.includes("roleId=135")) throw error;
+      return { Objects: [staff("prof")], Next: null };
+    });
+
+    await expect(getRoster(ctx, { courseId: COURSE_ID })).rejects.toBe(error);
   });
 });
