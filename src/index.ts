@@ -56,7 +56,7 @@ export type {
   DiscussionsTopicPosts,
   DiscussionsResult,
 } from "./features/discussions.js";
-export type { GetRosterArgs, RosterUser, RosterResult } from "./features/roster.js";
+export type { GetRosterArgs, RosterUser, RosterResult, RosterStaffRole } from "./features/roster.js";
 export type { GetClasslistEmailsArgs, ClasslistEmailEntry, ClasslistEmailsResult } from "./features/classlist-emails.js";
 export type {
   GetVideoTranscriptArgs,
