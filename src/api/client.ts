@@ -4,8 +4,7 @@
  * Licensed under MIT — see LICENSE file for details.
  */
 
-import type { D2LApiClientOptions, ApiVersions, CacheTTLs, TokenData } from "./types.js";
-import { DEFAULT_CACHE_TTLS } from "./types.js";
+import type { D2LApiClientOptions, ApiVersions, TokenData } from "./types.js";
 import { TTLCache } from "./cache.js";
 import { TokenBucket } from "./rate-limiter.js";
 import { discoverVersions } from "./version-discovery.js";
@@ -116,7 +115,7 @@ const LE_VERSION = "{le}";
  * - Auto-discovers LP/LE versions from /d2l/api/versions/ on the first request
  * - Supports both Bearer tokens and cookie-based auth (auto-detected via "cookie:" prefix)
  * - Client-side rate limiting using token bucket algorithm
- * - In-memory response caching with per-data-type TTLs
+ * - In-memory response caching (each caller passes its TTL to get())
  * - 401 recovery: refresh the token before requesting browser authentication
  * - HTTPS-only enforcement
  * - Browser-like User-Agent for requests
@@ -127,7 +126,6 @@ export class D2LApiClient {
   private readonly tokenManager: D2LApiClientOptions["tokenManager"];
   private readonly cache: TTLCache;
   private readonly rateLimiter: TokenBucket;
-  private readonly cacheTTLs: CacheTTLs;
   private readonly timeoutMs: number;
   private readonly onAuthExpired?: () => Promise<boolean>;
   private readonly retryConfig: RetryConfig;
@@ -163,9 +161,6 @@ export class D2LApiClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.onAuthExpired = options.onAuthExpired;
     this.retryConfig = options.retry ?? {};
-
-    // Merge user-provided TTLs with defaults
-    this.cacheTTLs = { ...DEFAULT_CACHE_TTLS, ...options.cacheTTLs };
 
     // Initialize cache and rate limiter
     this.cache = new TTLCache();
