@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { getCourseContent } from "../../src/features/content.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { ZodError } from "zod";
+import { ApiError, TokenRefreshError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 
 /**
  * A module whose structure lists itself is a cycle, and with no maxDepth the
@@ -303,13 +305,140 @@ describe("getCourseContent embedded structure fallback", () => {
     expect(result.topicCount).toBe(1);
   });
 
-  it("still reports an empty module as empty when nothing was embedded", async () => {
+  it("reports children null with a reason, not an empty module, when nothing was embedded (brightspace-mcp-server#405)", async () => {
     const ctx = setupBrokenStructure(SELF_REFERENCING_MODULE);
 
     const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+    const module = result.contentTree[0] as any;
 
     expect(result.moduleCount).toBe(1);
+    expect(module.children).toBeNull();
+    expect(module.childrenUnavailable).toMatchObject({ status: 403 });
+    expect(module.childrenUnavailable.reason).toMatch(/refused/);
+    expect(result.notice).toMatch(/1 module\(s\) couldn't be read/);
+    expect(result.notice).toMatch(/Do not report those modules as empty/);
+  });
+
+  it("omits childrenUnavailable and the notice when the embedded structure covered the failure", async () => {
+    const ctx = setupBrokenStructure(MODULE_WITH_EMBEDDED_STRUCTURE);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect(result.contentTree[0]).not.toHaveProperty("childrenUnavailable");
+    expect(result).not.toHaveProperty("notice");
+  });
+});
+
+/**
+ * A module whose /structure/ call failed with nothing embedded used to come
+ * back as children: [], indistinguishable from a module with nothing in it,
+ * and a pending sign-in mid-walk produced a tree of empty modules
+ * (brightspace-mcp-server#405).
+ */
+describe("getCourseContent unreadable module structure (brightspace-mcp-server#405)", () => {
+  function setupStructure(structure: () => unknown): FeatureContext {
+    return makeCtx(async (path: string) => {
+      if (path.endsWith("/content/userprogress/")) return [];
+      if (path.includes("/structure/")) return structure();
+      return [SELF_REFERENCING_MODULE];
+    });
+  }
+
+  const serverError = () => {
+    throw new ApiError(500, "/content/modules/1/structure/", "boom");
+  };
+
+  it("still reports a module that answered with an empty list as empty", async () => {
+    const ctx = setupStructure(() => []);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
     expect((result.contentTree[0] as any).children).toEqual([]);
+    expect(result.contentTree[0]).not.toHaveProperty("childrenUnavailable");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("names the status of a server error and says to try again", async () => {
+    const ctx = setupStructure(serverError);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+    const module = result.contentTree[0] as any;
+
+    expect(module.children).toBeNull();
+    expect(module.childrenUnavailable).toEqual({
+      status: 500,
+      reason: "Couldn't read this module's contents (Brightspace answered 500). It may hold items; try again.",
+    });
+  });
+
+  it("reports a null status for an error that carries none", async () => {
+    const ctx = setupStructure(() => {
+      throw new Error("socket hang up");
+    });
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect((result.contentTree[0] as any).childrenUnavailable).toEqual({
+      status: null,
+      reason: "Couldn't read this module's contents. It may hold items; try again.",
+    });
+  });
+
+  it("treats an answer that is not a list as unreadable", async () => {
+    const ctx = setupStructure(() => ({ unexpected: true }));
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+    const module = result.contentTree[0] as any;
+
+    expect(module.children).toBeNull();
+    expect(module.childrenUnavailable.status).toBeNull();
+  });
+
+  it("keeps the unreadable module under a typeFilter instead of dropping it", async () => {
+    const ctx = setupStructure(serverError);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID, typeFilter: "file" });
+
+    expect(result.moduleCount).toBe(1);
+    expect((result.contentTree[0] as any).childrenUnavailable).toBeDefined();
+    expect(result.notice).toBeDefined();
+  });
+
+  it("keeps the unreadable module under modifiedSince, children still null", async () => {
+    const ctx = setupStructure(serverError);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID, modifiedSince: "2026-01-01T00:00:00Z" });
+
+    expect(result.moduleCount).toBe(1);
+    expect((result.contentTree[0] as any).children).toBeNull();
+    expect(result.notice).toBeDefined();
+  });
+
+  it("counts unreadable modules nested inside readable ones", async () => {
+    const ctx = makeCtx(async (path: string) => {
+      if (path.endsWith("/content/userprogress/")) return [];
+      if (path.includes("/modules/1/structure/")) return [{ ...SELF_REFERENCING_MODULE, Id: 2 }, { ...SELF_REFERENCING_MODULE, Id: 3 }];
+      if (path.includes("/structure/")) serverError();
+      return [SELF_REFERENCING_MODULE];
+    });
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect(result.moduleCount).toBe(3);
+    expect(result.notice).toMatch(/The contents of 2 module\(s\) couldn't be read/);
+  });
+
+  it.each([
+    ["a pending MFA sign-in", () => new AuthProcessError("mfaPending", "MFA approval pending")],
+    ["a token that could not be renewed", () => new TokenRefreshError("HTTP 503")],
+    ["an unrecovered 401", () => new ApiError(401, "/content/modules/1/structure/", "Session expired")],
+  ])("throws on %s instead of reporting an unreadable module", async (_label, makeError) => {
+    const error = makeError();
+    const ctx = setupStructure(() => {
+      throw error;
+    });
+
+    await expect(getCourseContent(ctx, { courseId: COURSE_ID })).rejects.toBe(error);
   });
 });
 

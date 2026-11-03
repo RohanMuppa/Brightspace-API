@@ -71,5 +71,12 @@ export type {
   AnnouncementFileListing,
   AnnouncementFilesResult,
 } from "./features/announcement-files.js";
-export type { GetCourseContentArgs, ContentModule, ContentTopic, ContentNode, CourseContentResult } from "./features/content.js";
+export type {
+  GetCourseContentArgs,
+  ContentModule,
+  ContentTopic,
+  ContentNode,
+  CourseContentResult,
+  ChildrenUnavailable,
+} from "./features/content.js";
 export type { GetSyllabusArgs, SyllabusDownload, SyllabusResult } from "./features/syllabus.js";

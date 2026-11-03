@@ -200,7 +200,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
-| `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` |
+| `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`) |
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
@@ -237,6 +237,15 @@ plus an `unavailable` field naming the missing roles (`"instructors"`, `"TAs"`) 
 saying they may be missing, so a roster with no TAs there means "unknown", not "no TAs". Both are
 absent when every role was read. A 403 is still skipped quietly, and a sign-in problem throws, as
 in `getAssignments`.
+
+`getCourseContent` reads each module's items from its own `/structure/` route, falling back to the
+items the parent listing embedded. When neither could be read (a 403, a 404, a 5xx, a network
+error, an answer that is not a list), the module stays in the tree, under any `typeFilter` or
+`modifiedSince`, with `children: null` and a `childrenUnavailable` field — `{ status, reason }`,
+`status` null when Brightspace gave none — and the result carries a `notice` saying how many
+modules could not be read and that they must not be reported as empty. `children: []` still means
+the module was read and is empty. `childrenUnavailable` and `notice` are absent when every module
+was read. A sign-in problem throws, as in `getAssignments`.
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,
