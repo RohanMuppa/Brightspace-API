@@ -38,6 +38,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- On Windows, clearing a session called `trash` to move `session.json` aside, but the shared
+  runtime is detached and has no console, and `trash`'s `windows-trash.exe` helper has no way to
+  run hidden, so a terminal window flashed open. The same thing happened when a sign-in was
+  stopped or failed, since the `taskkill` call that stops the sign-in child omitted
+  `windowsHide`. `SessionStore.clear()` and `clearIfCurrent()` now delete `session.json` directly
+  instead of moving it to Trash, and the `taskkill` call passes `windowsHide: true`. A cleared
+  session is no longer recoverable from Trash, matching `remove()`. Ported from
+  [RohanMuppa/brightspace-mcp-server#396](https://github.com/RohanMuppa/brightspace-mcp-server/pull/396)
+  (fixes [RohanMuppa/brightspace-mcp-server#395](https://github.com/RohanMuppa/brightspace-mcp-server/issues/395),
+  ported via [#99](https://github.com/RohanMuppa/Brightspace-API/issues/99)).
+
 - `getCourseContent` asks `/content/modules/{id}/structure/` for each module's items; when that
   failed and the parent listing had not embedded a `Structure` array, the module came back with
   `children: []`, which read as an empty module, and under a `typeFilter` it was dropped from the

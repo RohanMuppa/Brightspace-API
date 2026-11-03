@@ -622,7 +622,7 @@ describe("AuthRunner", () => {
     const failure = expect(runner.run()).rejects.toMatchObject({ kind: "timeout" });
     await vi.advanceTimersByTimeAsync(1000);
     if (process.platform !== "win32") expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
-    else expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/pid", "12345", "/t", "/f"], expect.any(Object));
+    else expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/pid", "12345", "/t", "/f"], expect.objectContaining({ windowsHide: true }));
     await vi.advanceTimersByTimeAsync(5000);
     await failure;
     if (process.platform !== "win32") {
@@ -630,7 +630,7 @@ describe("AuthRunner", () => {
       expect(kill).toHaveBeenCalledWith(12346, "SIGKILL");
       expect(kill).toHaveBeenCalledWith(12347, "SIGKILL");
       expect(kill).not.toHaveBeenCalledWith(99999, expect.any(String));
-    } else expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/pid", "12345", "/t", "/f"], expect.any(Object));
+    } else expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/pid", "12345", "/t", "/f"], expect.objectContaining({ windowsHide: true }));
     expect(process.listenerCount("exit")).toBe(exits);
 
     child = mockChild();

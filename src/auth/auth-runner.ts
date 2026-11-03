@@ -806,7 +806,7 @@ export class AuthRunner {
         try {
           if (child.pid && process.platform === "win32") {
             execFileSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-              stdio: "ignore", timeout: 5000,
+              stdio: "ignore", timeout: 5000, windowsHide: true,
             });
           } else if (child.pid) {
             if (signal === "SIGKILL") {
