@@ -7,7 +7,7 @@ import { SessionStore, SESSION_FILE } from "../../src/auth/session-store.js";
 import { TokenRefreshError } from "../../src/api/errors.js";
 import type { TokenData } from "../../src/types/index.js";
 import type { mintAccessToken } from "../../src/auth/token-mint.js";
-import { MemoryCredentialBackend, retireTestFile } from "./secure-store-fixtures.js";
+import { MemoryCredentialBackend } from "./secure-store-fixtures.js";
 
 type MintFn = typeof mintAccessToken;
 
@@ -55,7 +55,7 @@ describe("TokenManager notices a deleted or replaced saved session", () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "token-manager-signout-"));
     sessionPath = path.join(dir, SESSION_FILE);
     backend = new MemoryCredentialBackend();
-    other = new SessionStore(dir, { backend, trash: retireTestFile });
+    other = new SessionStore(dir, { backend });
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -64,7 +64,7 @@ describe("TokenManager notices a deleted or replaced saved session", () => {
 
   /** A process: its own TokenManager over the shared directory. */
   const startProcess = (extra: Record<string, unknown> = {}) =>
-    new TokenManager({ baseUrl: BASE_URL, sessionStore: new SessionStore(dir, { backend, trash: retireTestFile }), ...extra });
+    new TokenManager({ baseUrl: BASE_URL, sessionStore: new SessionStore(dir, { backend }), ...extra });
 
   it("returns the cached token while the saved session still exists", async () => {
     const proc = startProcess();
@@ -245,7 +245,7 @@ describe("TokenManager notices a deleted or replaced saved session", () => {
     });
 
     it("drops the token even when a re-sign-in has already recreated the file", async () => {
-      const own = new SessionStore(dir, { backend, trash: retireTestFile });
+      const own = new SessionStore(dir, { backend });
       const proc = new TokenManager({ baseUrl: BASE_URL, sessionStore: own });
       await proc.setToken(withCookie("alice-token-12345678", "d2lSessionVal=alice"));
       await fs.unlink(sessionPath);
@@ -273,7 +273,7 @@ describe("TokenManager notices a deleted or replaced saved session", () => {
   });
 
   it("checks with a stat, never a decrypting load, on the cached hot path", async () => {
-    const injected = new SessionStore(dir, { backend, trash: retireTestFile });
+    const injected = new SessionStore(dir, { backend });
     const proc = new TokenManager({ baseUrl: BASE_URL, sessionStore: injected });
     await proc.setToken(tokenNamed("old-token-12345678"));
     const load = vi.spyOn(injected, "load");
