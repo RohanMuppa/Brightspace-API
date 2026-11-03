@@ -6,6 +6,7 @@
 
 import type { z } from "zod";
 import { DEFAULT_CACHE_TTLS } from "../api/index.js";
+import { isAuthUnavailable } from "../api/errors.js";
 import { GetCourseContentSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
@@ -56,7 +57,25 @@ export interface ContentModule {
   isHidden?: boolean;
   isLocked?: boolean;
   lastModified: string | null;
-  children: ContentNode[];
+  /**
+   * The module's items, or null when they could not be read (see
+   * `childrenUnavailable`). An empty array means the module was read and is
+   * empty.
+   */
+  children: ContentNode[] | null;
+  /**
+   * Set, with `children: null`, when neither the module's /structure/ call
+   * nor the parent listing gave its contents. Absent on every module that
+   * was read.
+   */
+  childrenUnavailable?: ChildrenUnavailable;
+}
+
+/** Why a module's children are missing from the tree. */
+export interface ChildrenUnavailable {
+  /** The HTTP status Brightspace answered with, or null (network error, an answer that was not a list). */
+  status: number | null;
+  reason: string;
 }
 
 export interface ContentTopic {
@@ -87,6 +106,12 @@ export interface CourseContentResult {
   modifiedSince?: string;
   returned?: number;
   filteredOut?: number;
+  /**
+   * Set when some modules' contents could not be read (they have
+   * `children: null` and `childrenUnavailable`): says how many, and that
+   * they must not be reported as empty. Absent when every module was read.
+   */
+  notice?: string;
 }
 
 // Topic type mapping
@@ -119,6 +144,45 @@ function matchesTypeFilter(item: ContentObject, filter: string): boolean {
  */
 const MAX_CONTENT_DEPTH = 12;
 
+/**
+ * Fetch a single module's structure, or say why it couldn't be read (locked
+ * module, transient error, an answer that is not a list) so the caller can
+ * fall back to whatever structure the parent listing already embedded. A
+ * pending or expired sign-in is rethrown: it fails every module the same way,
+ * and must fail the call instead of showing a course whose every module looks
+ * empty.
+ */
+async function fetchModuleStructure(
+  ctx: FeatureContext,
+  courseId: number,
+  moduleId: number,
+): Promise<ContentObject[] | ChildrenUnavailable> {
+  let structure: unknown;
+  try {
+    structure = await ctx.api.get<ContentObject[]>(ctx.api.le(courseId, `/content/modules/${moduleId}/structure/`), {
+      ttl: DEFAULT_CACHE_TTLS.courseContent,
+    });
+  } catch (error) {
+    if (isAuthUnavailable(error)) throw error;
+    log("DEBUG", `Failed to fetch children for module ${moduleId}: falling back to the embedded structure`, error);
+    const raw = (error as { status?: unknown } | null)?.status;
+    const status = typeof raw === "number" ? raw : null;
+    return {
+      status,
+      reason:
+        status === 403
+          ? "Brightspace refused this account's request for this module's contents. It may hold items; open the module in a browser to see what this account can read."
+          : `Couldn't read this module's contents${status !== null ? ` (Brightspace answered ${status})` : ""}. It may hold items; try again.`,
+    };
+  }
+  if (Array.isArray(structure)) return structure;
+  log("DEBUG", `Module ${moduleId} structure was not a list: falling back to the embedded structure`);
+  return {
+    status: null,
+    reason: "Brightspace answered with something other than a list of this module's contents. It may hold items; try again.",
+  };
+}
+
 /** Recursively build the content tree with progress tracking. */
 async function buildContentTree(
   ctx: FeatureContext,
@@ -136,6 +200,7 @@ async function buildContentTree(
     if (item.Type === 0) {
       // Module: fetch children recursively (unless the depth limit is reached)
       let processedChildren: ContentNode[] = [];
+      let childrenUnavailable: ChildrenUnavailable | undefined;
 
       if (currentDepth < depthLimit) {
         // The parent listing already embeds this module's immediate children
@@ -145,20 +210,23 @@ async function buildContentTree(
         // what the parent already handed us. Falling through to an empty list
         // made a locked or erroring module look like an empty one, and under a
         // typeFilter it dropped the module from the tree with no trace.
+        // When neither copy is readable, the module's children are reported
+        // as null with a reason, never as [], so it can't pass for an empty
+        // module, and the module is kept under any typeFilter because nothing
+        // says it holds no matching items.
+        const structure = await fetchModuleStructure(ctx, courseId, item.Id);
         let children: ContentObject[] | null = null;
-        try {
-          children = await ctx.api.get<ContentObject[]>(ctx.api.le(courseId, `/content/modules/${item.Id}/structure/`), {
-            ttl: DEFAULT_CACHE_TTLS.courseContent,
-          });
-        } catch {
-          log("DEBUG", `Failed to fetch children for module ${item.Id}: falling back to the embedded structure`);
+        if (Array.isArray(structure)) {
+          children = structure;
+        } else if (Array.isArray(item.Structure)) {
+          children = item.Structure;
+        } else {
+          childrenUnavailable = structure;
         }
 
-        if (!Array.isArray(children)) {
-          children = Array.isArray(item.Structure) ? item.Structure : [];
+        if (children) {
+          processedChildren = await buildContentTree(ctx, courseId, children, progressMap, typeFilter, maxDepth, currentDepth + 1);
         }
-
-        processedChildren = await buildContentTree(ctx, courseId, children, progressMap, typeFilter, maxDepth, currentDepth + 1);
       } else if (currentDepth >= MAX_CONTENT_DEPTH) {
         log("DEBUG", `Content depth ceiling of ${MAX_CONTENT_DEPTH} reached at module ${item.Id}: not descending further`);
       }
@@ -168,7 +236,7 @@ async function buildContentTree(
         : [];
 
       // Only include module if it has matching children (or filter is 'all')
-      if (typeFilter === "all" || processedChildren.length > 0) {
+      if (typeFilter === "all" || processedChildren.length > 0 || childrenUnavailable) {
         tree.push({
           type: "module",
           id: item.Id,
@@ -179,7 +247,8 @@ async function buildContentTree(
           ...(item.IsHidden ? { isHidden: item.IsHidden } : {}),
           ...(item.IsLocked ? { isLocked: item.IsLocked } : {}),
           lastModified: item.LastModifiedDate ?? null,
-          children: processedChildren,
+          ...(childrenUnavailable ? { childrenUnavailable } : {}),
+          children: childrenUnavailable ? null : processedChildren,
         });
       }
     } else if (item.Type === 1) {
@@ -241,6 +310,10 @@ function filterTreeByModifiedSince(tree: ContentNode[], cutoff: Date): ContentNo
       if (matchesModifiedSince(item.lastModified, cutoff)) {
         result.push(item);
       }
+    } else if (item.childrenUnavailable) {
+      // A module whose children couldn't be read stays in, children null:
+      // nothing says none of them changed since the cutoff.
+      result.push(item);
     } else {
       const filteredChildren = filterTreeByModifiedSince(item.children ?? [], cutoff);
       const moduleMatches = matchesModifiedSince(item.lastModified, cutoff);
@@ -272,6 +345,18 @@ function countModules(tree: ContentNode[]): number {
       if (item.children) {
         count += countModules(item.children);
       }
+    }
+  }
+  return count;
+}
+
+/** Count modules whose children couldn't be read (for the notice). */
+function countUnreadableModules(tree: ContentNode[]): number {
+  let count = 0;
+  for (const item of tree) {
+    if (item.type === "module") {
+      if (item.childrenUnavailable) count++;
+      if (item.children) count += countUnreadableModules(item.children);
     }
   }
   return count;
@@ -324,7 +409,13 @@ export async function getCourseContent(ctx: FeatureContext, args: GetCourseConte
   const topicCount = countTopics(contentTree);
   const moduleCount = countModules(contentTree);
 
-  log("INFO", `getCourseContent: ${moduleCount} modules and ${topicCount} topics for course ${courseId} (filter: ${typeFilter})`);
+  const unreadable = countUnreadableModules(contentTree);
+
+  log(
+    "INFO",
+    `getCourseContent: ${moduleCount} modules and ${topicCount} topics for course ${courseId} (filter: ${typeFilter})` +
+      (unreadable > 0 ? `, ${unreadable} module(s) unreadable` : ""),
+  );
 
   return {
     courseId,
@@ -333,5 +424,13 @@ export async function getCourseContent(ctx: FeatureContext, args: GetCourseConte
     topicCount,
     moduleCount,
     ...(modifiedSince ? { modifiedSince, returned: topicCount, filteredOut } : {}),
+    ...(unreadable > 0
+      ? {
+          notice:
+            `The contents of ${unreadable} module(s) couldn't be read; they have children null and a ` +
+            "childrenUnavailable reason. topicCount leaves out whatever they hold. Do not report " +
+            "those modules as empty.",
+        }
+      : {}),
   };
 }

@@ -38,6 +38,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getCourseContent` asks `/content/modules/{id}/structure/` for each module's items; when that
+  failed and the parent listing had not embedded a `Structure` array, the module came back with
+  `children: []`, which read as an empty module, and under a `typeFilter` it was dropped from the
+  tree. Such a module now stays in the tree under any `typeFilter` or `modifiedSince`, with
+  `children: null` and a new `childrenUnavailable` field (`ChildrenUnavailable`: `{ status,
+  reason }`), and the result carries a `notice` naming how many modules could not be read and
+  saying not to report them as empty. Readable modules keep their `children` array (`[]` when
+  empty) and the embedded-`Structure` fallback is unchanged; both new fields are absent when every
+  module was read. A sign-in problem (unrecovered 401, pending MFA sign-in, token refresh failure)
+  on a module's structure call now fails the whole call instead of turning every module empty. The
+  MCP's `search_course` note has no counterpart here, since this package has no course search.
+  Ported from [RohanMuppa/brightspace-mcp-server#406](https://github.com/RohanMuppa/brightspace-mcp-server/pull/406)
+  (fixes [RohanMuppa/brightspace-mcp-server#405](https://github.com/RohanMuppa/brightspace-mcp-server/issues/405)).
+
 - `getRoster` without `includeStudents` fetches the instructors (role 109) and the TAs (role 135)
   in parallel, but a route that failed was only logged at WARN, so a 500 on the TA route returned
   the instructors alone and read as "this course has no TAs". A role route that fails with anything
