@@ -64,7 +64,7 @@ Each `src/features/<name>.ts` exports exactly:
 | `syllabus.ts` | `getSyllabus(ctx, args)` | `GetSyllabusArgs` | `SyllabusResult` |
 | `discussions.ts` | `getDiscussions(ctx, args)` | `GetDiscussionsArgs` | `DiscussionsResult` |
 | `roster.ts` | `getRoster(ctx, args)` | `GetRosterArgs` | `RosterResult` |
-| `classlist-emails.ts` | `getClasslistEmails(ctx, args)` | `GetClasslistEmailsArgs` | `ClasslistEmailsResult` |
+| `classlist-emails.ts` | `getClasslistEmails(ctx, args)` | `GetClasslistEmailsArgs` | `ClasslistEmailsResult` (`ClasslistEmailEntry[]` + optional `hiddenCount`, `notice`) |
 | `transcript.ts` | `getVideoTranscript(ctx, args)` | `GetVideoTranscriptArgs` | `VideoTranscriptResult` |
 
 Rules, all of them:

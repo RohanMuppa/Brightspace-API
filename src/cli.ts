@@ -201,6 +201,20 @@ function writeFailedCourses(deps: CliDeps, result: unknown): void {
   }
 }
 
+/**
+ * `getClasslistEmails` counts people whose email Brightspace hides in
+ * `hiddenCount` and `notice` properties on the array, which JSON.stringify
+ * drops. As with `failedCourses`, stdout stays the bare array and they go to
+ * stderr as one JSON line, so a partial list is never read as the whole class.
+ */
+function writeHiddenEmails(deps: CliDeps, result: unknown): void {
+  if (!Array.isArray(result)) return;
+  const { hiddenCount, notice } = result as { hiddenCount?: number; notice?: string };
+  if (typeof hiddenCount === "number" && hiddenCount > 0) {
+    deps.stderr.write(`${JSON.stringify({ hiddenCount, notice })}\n`);
+  }
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -263,6 +277,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     const result = await command.run(client, values);
     deps.stdout.write(`${JSON.stringify(result)}\n`);
     writeFailedCourses(deps, result);
+    writeHiddenEmails(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

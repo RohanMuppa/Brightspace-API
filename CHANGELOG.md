@@ -38,6 +38,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getClasslistEmails()` (`brightspace emails`) left out everyone whose email Brightspace hides
+  without saying so, so a partial list read as the whole class and a course where every email is
+  hidden came back `[]`, indistinguishable from an empty course. The result is still a
+  `ClasslistEmailEntry[]`; `ClasslistEmailsResult` now adds `hiddenCount` and `notice` properties
+  on the array (e.g. "2 of 3 people in this course have no email visible to you (Brightspace hides
+  it), so they are not listed."), present only when someone was left out, so iterating, `.length`,
+  and the JSON are unchanged. A deep-equality check (`toEqual`) against a plain array now sees the
+  extra properties when someone is hidden; compare `[...result]` instead. As with `failedCourses`
+  on `brightspace due`, the CLI keeps stdout the bare array and writes
+  `{"hiddenCount":N,"notice":"…"}` to stderr. Ported from
+  [RohanMuppa/brightspace-mcp-server#410](https://github.com/RohanMuppa/brightspace-mcp-server/pull/410)
+  (fixes [RohanMuppa/brightspace-mcp-server#409](https://github.com/RohanMuppa/brightspace-mcp-server/issues/409)).
+
 - On Windows, clearing a session called `trash` to move `session.json` aside, but the shared
   runtime is detached and has no console, and `trash`'s `windows-trash.exe` helper has no way to
   run hidden, so a terminal window flashed open. The same thing happened when a sign-in was
