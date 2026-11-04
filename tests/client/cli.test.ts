@@ -147,6 +147,26 @@ describe("brightspace CLI argv parsing", () => {
     expect(getClasslistEmails).toHaveBeenCalledWith({ courseId: 7 });
   });
 
+  it("emails keeps stdout a bare array and writes hidden-email counts to stderr", async () => {
+    const entry = { name: "ada", email: "ada@example.edu", role: "Student" };
+    const notice = "2 of 3 people in this course have no email visible to you (Brightspace hides it), so they are not listed.";
+    const result = Object.assign([entry], { hiddenCount: 2, notice });
+    const getClasslistEmails = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getClasslistEmails });
+
+    expect(await main(["emails", "--course", "7"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([entry])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCount: 2, notice })}\n`]);
+  });
+
+  it("emails writes nothing to stderr when every email is visible", async () => {
+    const getClasslistEmails = vi.fn(async () => [] as never);
+    const { deps, stderr } = makeDeps({ getClasslistEmails });
+
+    expect(await main(["emails", "--course", "7"], deps)).toBe(0);
+    expect(stderr).toEqual([]);
+  });
+
   it("download --course ID --topic ID --dir PATH [--name NAME] maps to downloadFile", async () => {
     const downloadFile = vi.fn(async () => ({ success: true }));
     const { deps } = makeDeps({ downloadFile });

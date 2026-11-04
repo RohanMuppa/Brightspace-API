@@ -176,6 +176,8 @@ brightspace due --days 3 | jq -r '.[] | "\(.dueDate)\t\(.title)"'
 
 If some courses' due dates could not be read, `brightspace due` still prints the array on stdout
 and exits 0, and adds one line to stderr: `{"failedCourses":[…]}` naming those courses.
+Likewise, when Brightspace hides some people's email, `brightspace emails` prints the visible ones
+on stdout and adds `{"hiddenCount":N,"notice":"…"}` to stderr.
 
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
@@ -204,7 +206,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
-| `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` |
+| `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` (`ClasslistEmailEntry[]` with optional `hiddenCount`, `notice`) |
 | `getVideoTranscript(args)` | `GetVideoTranscriptArgs` — `courseId?`, `topicId?`, `videoUrl?`, `offset?` (default 0), `maxChars?` (default 12000) | `VideoTranscriptResult` |
 | `getInfo()` | — | `ClientInfo` |
 
@@ -246,6 +248,13 @@ error, an answer that is not a list), the module stays in the tree, under any `t
 modules could not be read and that they must not be reported as empty. `children: []` still means
 the module was read and is empty. `childrenUnavailable` and `notice` are absent when every module
 was read. A sign-in problem throws, as in `getAssignments`.
+
+`getClasslistEmails` still resolves to an array of `ClasslistEmailEntry`s, leaving out people
+whose email Brightspace hides. When anyone was left out, the array carries a `hiddenCount`
+property (how many) and a `notice` saying how many of the course's people are not listed and why,
+so a short or empty list there means "some emails are hidden", not "that is the whole class".
+Both are absent when every email was visible. Like `failedCourses`, they are properties on the
+array that `JSON.stringify` drops; the CLI writes them to stderr as one JSON line.
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,
