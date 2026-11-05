@@ -5,7 +5,15 @@ import path from "node:path";
 import { getSyllabus } from "../../src/features/syllabus.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import { ApiError } from "../../src/api/index.js";
-import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../../src/errors.js";
+import { NetworkError, TokenRefreshError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
+import {
+  BrightspaceApiError,
+  BrightspaceForbiddenError,
+  BrightspaceInvalidArgumentError,
+  BrightspaceNetworkError,
+  BrightspaceNotFoundError,
+} from "../../src/errors.js";
 import { oversizeBody, CHUNKS_AT_CAP } from "./oversize-body.js";
 
 /**
@@ -136,6 +144,57 @@ describe("getSyllabus", () => {
 
     const result = await getSyllabus(ctx, { courseId: COURSE_ID });
     expect(result.hasAttachment).toBe(false);
+    expect(result).not.toHaveProperty("attachmentUnreadable");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it.each([
+    ["a 403", () => new ApiError(403, "/overview/attachment", "Forbidden")],
+    ["a 500", () => new ApiError(500, "/overview/attachment", "Internal Server Error")],
+    ["a network failure", () => new NetworkError("fetch failed")],
+    ["a timeout", () => new NetworkError("Request timed out")],
+  ])("says the attachment could not be read, not that there is none, on %s", async (_label, makeError) => {
+    const { ctx } = setup({
+      overview: { Description: { Text: "plain", Html: "<p>Welcome</p>" } },
+      attachment: () => {
+        throw makeError();
+      },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.description).toContain("Welcome");
+    expect(result.hasAttachment).toBe(false);
+    expect(result.attachmentUnreadable).toBe(true);
+    expect(result.notice).toMatch(/could not be read from Brightspace/);
+    expect(result.notice).toMatch(/may still have a syllabus file/);
+    expect(result.notice).toMatch(/Do not report the course as having no syllabus attachment/);
+  });
+
+  it("leaves attachmentUnreadable and notice off when the attachment was read", async () => {
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: { headers: { "Content-Disposition": 'attachment; filename="syllabus.docx"' }, body: Buffer.from("not a pdf") },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result).not.toHaveProperty("attachmentUnreadable");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it.each([
+    ["a pending MFA sign-in", () => new AuthProcessError("mfaPending", "MFA approval pending")],
+    ["a token that could not be renewed", () => new TokenRefreshError("HTTP 503")],
+    ["an unrecovered 401", () => new ApiError(401, "/overview/attachment", "Session expired")],
+  ])("throws on %s instead of reporting an unreadable attachment", async (_label, makeError) => {
+    const error = makeError();
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: () => {
+        throw error;
+      },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID })).rejects.toBe(error);
   });
 });
 
@@ -274,5 +333,51 @@ describe("getSyllabus downloadPath", () => {
     const { ctx } = setup({ overview: { Description: null } });
 
     await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toBeInstanceOf(BrightspaceNotFoundError);
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toMatchObject({
+      message: "No attachment found for this course's syllabus.",
+    });
+  });
+
+  it.each([
+    ["a 403", () => new ApiError(403, "/overview/attachment", "Forbidden"), BrightspaceForbiddenError, "BRIGHTSPACE_FORBIDDEN"],
+    ["a 500", () => new ApiError(500, "/overview/attachment", "Internal Server Error"), BrightspaceApiError, "BRIGHTSPACE_API_ERROR"],
+    ["a network failure", () => new NetworkError("fetch failed"), BrightspaceNetworkError, "BRIGHTSPACE_NETWORK"],
+  ])("says the attachment could not be read, not that there is none, when downloading on %s", async (_label, makeError, errorClass, code) => {
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: () => {
+        throw makeError();
+      },
+    });
+
+    const failure = await getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(errorClass);
+    expect(failure).not.toBeInstanceOf(BrightspaceNotFoundError);
+    expect(failure).toMatchObject({ code, message: expect.stringMatching(/could not be read from Brightspace, so nothing was saved/) });
+    expect((failure as Error).message).not.toMatch(/No attachment found/);
+    expect(await walk(root)).toEqual([]);
+  });
+
+  it("keeps the HTTP status on the download error for a 5xx", async () => {
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: () => {
+        throw new ApiError(503, "/overview/attachment", "Service Unavailable");
+      },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("lets a sign-in problem through when downloading", async () => {
+    const error = new AuthProcessError("mfaPending", "MFA approval pending");
+    const { ctx } = setup({
+      overview: { Description: null },
+      attachment: () => {
+        throw error;
+      },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toBe(error);
   });
 });

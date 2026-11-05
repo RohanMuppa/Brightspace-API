@@ -203,7 +203,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`) |
-| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` |
+| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`) |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
 | `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` (`ClasslistEmailEntry[]` with optional `hiddenCount`, `notice`) |
@@ -255,6 +255,16 @@ property (how many) and a `notice` saying how many of the course's people are no
 so a short or empty list there means "some emails are hidden", not "that is the whole class".
 Both are absent when every email was visible. Like `failedCourses`, they are properties on the
 array that `JSON.stringify` drops; the CLI writes them to stderr as one JSON line.
+
+`getSyllabus` reads the overview's attachment from `/overview/attachment`. A 404 there means the
+course has no attachment (`hasAttachment: false`). Any other failure (a 403, a 5xx, a timeout, a
+network error) sets `attachmentUnreadable: true` and a `notice` saying an attachment may exist but
+could not be read, so `hasAttachment: false` then means "unknown", not "no syllabus file". With
+`downloadPath`, that case throws `BrightspaceForbiddenError` (403), `BrightspaceApiError` (other
+HTTP statuses) or `BrightspaceNetworkError` saying the attachment could not be read and nothing
+was saved, instead of the `BrightspaceNotFoundError` a real 404 still gives. Both fields are absent
+when the attachment was read or is known missing. A sign-in problem throws, as in
+`getAssignments`.
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,

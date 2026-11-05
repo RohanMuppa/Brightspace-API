@@ -38,6 +38,21 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getSyllabus` fetches `/overview/attachment`; a 404 there correctly means no attachment, but any
+  other failure (a 403, a 5xx, a timeout, a network error) was logged at DEBUG and swallowed, so
+  the result read as "no attachment", and with `downloadPath` it threw `BrightspaceNotFoundError`
+  "No attachment found for this course's syllabus." Such a failure now sets a new
+  `attachmentUnreadable: true` field and a `notice` saying an attachment may exist but could not be
+  read, so the course must not be reported as having no syllabus file (retry, or check
+  Brightspace); it is logged at INFO. With `downloadPath` it throws an error saying the attachment
+  could not be read and nothing was saved: `BrightspaceForbiddenError` for a 403,
+  `BrightspaceApiError` (with `status`) for other HTTP statuses, `BrightspaceNetworkError`
+  otherwise. A 404 is unchanged, and both new fields are absent when the attachment was read or is
+  known missing. A sign-in problem (unrecovered 401, pending MFA sign-in, token refresh failure)
+  on the attachment call now fails the whole call instead of reading as "no attachment". Ported
+  from [RohanMuppa/brightspace-mcp-server#415](https://github.com/RohanMuppa/brightspace-mcp-server/pull/415)
+  (fixes [RohanMuppa/brightspace-mcp-server#414](https://github.com/RohanMuppa/brightspace-mcp-server/issues/414)).
+
 - `getClasslistEmails()` (`brightspace emails`) left out everyone whose email Brightspace hides
   without saying so, so a partial list read as the whole class and a course where every email is
   hidden came back `[]`, indistinguishable from an empty course. The result is still a
