@@ -8,6 +8,7 @@ import type { z } from "zod";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { ApiError, DEFAULT_CACHE_TTLS } from "../api/index.js";
+import { isAuthUnavailable } from "../api/errors.js";
 import { GetSyllabusSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
@@ -15,7 +16,14 @@ import { MAX_FILE_SIZE } from "../utils/file-validator.js";
 import { extractPdfText } from "../utils/pdf-extractor.js";
 import { secureDownload, readBodyCapped } from "../utils/download-helpers.js";
 import { DownloadError } from "../utils/download-errors.js";
-import { BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
+import {
+  BrightspaceApiError,
+  BrightspaceForbiddenError,
+  BrightspaceInvalidArgumentError,
+  BrightspaceNetworkError,
+  BrightspaceNotFoundError,
+  type BrightspaceError,
+} from "../errors.js";
 import { log } from "../utils/logger.js";
 import { parseContentDispositionFilename } from "./download.js";
 
@@ -37,6 +45,15 @@ export interface SyllabusResult {
   courseId: number;
   description: string | null;
   hasAttachment?: boolean;
+  /**
+   * Set when the attachment request failed with anything but a 404 (a 403, a
+   * 5xx, a timeout, a network error): an attachment may exist but could not
+   * be read, so `hasAttachment: false` is then not proof the course has no
+   * syllabus file. Absent when the attachment was read or is known missing.
+   */
+  attachmentUnreadable?: true;
+  /** Set with `attachmentUnreadable`: says an attachment may exist and must not be reported as missing. */
+  notice?: string;
   syllabusText?: string;
   totalPages?: number;
   message?: string;
@@ -67,6 +84,29 @@ async function validateDownloadDirectory(downloadPath: string): Promise<void> {
     }
     throw error;
   }
+}
+
+const ATTACHMENT_UNREADABLE_NOTICE =
+  "The syllabus attachment could not be read from Brightspace, so this course may still have a syllabus " +
+  "file. Do not report the course as having no syllabus attachment: retry getSyllabus, or check the " +
+  "course overview in Brightspace.";
+
+const ATTACHMENT_UNREADABLE_DOWNLOAD =
+  "The syllabus attachment could not be read from Brightspace, so nothing was saved. " +
+  "Try again, or download it from the course overview in Brightspace.";
+
+/**
+ * The error a download throws when the attachment request failed (anything
+ * but a 404). Keeps the public code the failure itself would have had —
+ * forbidden, an HTTP status, or a network problem — but never says "not
+ * found", since an attachment may well exist.
+ */
+function attachmentUnreadableError(cause: unknown): BrightspaceError {
+  if (cause instanceof ApiError) {
+    if (cause.status === 403) return new BrightspaceForbiddenError(ATTACHMENT_UNREADABLE_DOWNLOAD);
+    return new BrightspaceApiError(cause.status, ATTACHMENT_UNREADABLE_DOWNLOAD);
+  }
+  return new BrightspaceNetworkError(ATTACHMENT_UNREADABLE_DOWNLOAD, { cause });
 }
 
 /**
@@ -107,6 +147,10 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
   let attachmentFilename = "syllabus";
   let hasAttachment = false;
   let tooLargeMessage: string | undefined;
+  // The failure, when the attachment request failed for any reason but a
+  // 404, so a failed read is never reported as "this course has no attachment".
+  let unreadableCause: unknown;
+  let attachmentUnreadable = false;
 
   try {
     const response = await ctx.api.getRaw(ctx.api.le(courseId, "/overview/attachment"));
@@ -134,10 +178,15 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
       }
     }
   } catch (error) {
+    // A pending or expired sign-in fails the call; it must not read as an
+    // unreadable (or missing) attachment.
+    if (isAuthUnavailable(error)) throw error;
     if (error instanceof ApiError && error.status === 404) {
       hasAttachment = false;
     } else {
-      log("DEBUG", "Could not fetch syllabus attachment", error);
+      attachmentUnreadable = true;
+      unreadableCause = error;
+      log("INFO", `getSyllabus: syllabus attachment for course ${courseId} could not be read`, error);
     }
   }
 
@@ -172,9 +221,14 @@ export async function getSyllabus(ctx: FeatureContext, args: GetSyllabusArgs): P
     result.hasAttachment = hasAttachment;
   }
   if (note) result.note = note;
+  if (attachmentUnreadable) {
+    result.attachmentUnreadable = true;
+    result.notice = ATTACHMENT_UNREADABLE_NOTICE;
+  }
 
   if (downloadPath !== undefined) {
     if (!attachmentBuffer) {
+      if (attachmentUnreadable) throw attachmentUnreadableError(unreadableCause);
       throw new BrightspaceNotFoundError("No attachment found for this course's syllabus.");
     }
     // A DownloadError (bad filename, path traversal, unsupported or
