@@ -33,7 +33,8 @@ npx -y brightspace-api@latest setup   # without installing first
 
 Purdue students can add `--purdue` to skip entering the school URL; SUNY campuses can add
 `--suny`; TU Delft students can add `--tudelft` (use your NetID, not your student email
-address). If you already run `brightspace-mcp-server` on this machine, you can skip this step —
+address); Memorial University of Newfoundland students can add `--mun`. If you already run
+`brightspace-mcp-server` on this machine, you can skip this step —
 the two packages read the same `~/.brightspace-mcp/config.json` and the same session under
 `~/.d2l-session/`.
 
