@@ -10,6 +10,7 @@ import { PurdueSSOFlow } from "./purdue-sso.js";
 import { SunySSOFlow, isSunyBrightspace } from "./suny-sso.js";
 import { WesternSSOFlow, isWesternBrightspace } from "./western-sso.js";
 import { TUDelftSSOFlow, isTUDelftBrightspace } from "./tudelft-sso.js";
+import { MunSSOFlow, isMunBrightspace } from "./mun-sso.js";
 import { BrowserAuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 
@@ -104,6 +105,10 @@ export function createSSOFlow(
 
   if (isWesternBrightspace(config.baseUrl)) {
     return new WesternSSOFlow(credentials);
+  }
+
+  if (isMunBrightspace(config.baseUrl)) {
+    return new MunSSOFlow(credentials);
   }
 
   return new PurdueSSOFlow(credentials);

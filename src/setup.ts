@@ -80,6 +80,13 @@ export const SCHOOL_PRESETS: Record<string, SchoolPreset> = {
     mfaNote: "Approve the sign-in request from your MFA app.",
     usernameHint: "Use your full sign-in address if your Western account requires it.",
   },
+  mun: {
+    name: "Memorial University of Newfoundland",
+    baseUrl: "https://online.mun.ca",
+    usernameLabel: "MUN Login ID",
+    passwordLabel: "MUN Login password",
+    mfaNote: "MUN Login normally runs headlessly without MFA.",
+  },
 };
 
 /**

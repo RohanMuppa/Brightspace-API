@@ -7,6 +7,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- Automatic sign-in now works at Memorial University of Newfoundland (`https://online.mun.ca`).
+  MUN lands on `/d2l/loginh/`, whose "MUN Login" button leads to its CAS server
+  (`/d2l/loginh/` -> `/d2l/custom/cas` -> `login.mun.ca/cas/login` -> `/d2l/home`); the default
+  flow never clicked that button, and CAS's plain `username` field matched none of the default
+  username selectors, so sign-in always got stuck on the landing page. The new
+  `src/auth/mun-sso.ts`, routed from `createSSOFlow`, clicks the button and enters credentials
+  only on `https://login.mun.ca`; a new `--mun` setup preset was added. Ported from
+  [RohanMuppa/brightspace-mcp-server#416](https://github.com/RohanMuppa/brightspace-mcp-server/pull/416)
+  (fixes [#103](https://github.com/RohanMuppa/Brightspace-API/issues/103)).
+
 - `loadConfig()` printed nothing while reading the saved password or authenticator key from the
   OS credential store, so a caller that stalled there looked identical to one stalled anywhere
   else. Both lookups are now wrapped in the new `startupPhase()` (`src/utils/startup-phase.ts`),
