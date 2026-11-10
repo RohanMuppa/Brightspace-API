@@ -87,7 +87,12 @@ export interface ContentTopic {
   isLocked?: boolean;
   dueDate?: string;
   lastModified: string | null;
-  isCompleted: boolean;
+  /**
+   * Whether the user has completed the topic, or null when the course's
+   * progress could not be read (see `progressUnavailable` on the result).
+   * Null means unknown, not "not completed".
+   */
+  isCompleted: boolean | null;
   completedDate?: string;
   description?: string | null;
   topicId?: number;
@@ -112,6 +117,13 @@ export interface CourseContentResult {
    * they must not be reported as empty. Absent when every module was read.
    */
   notice?: string;
+  /**
+   * Set when the user's completion progress could not be read (a 5xx, a
+   * timeout, a network error): every topic then has `isCompleted: null`, and
+   * topics must not be reported as not completed. Absent when progress was
+   * read, or when the course has none for this user (403/404).
+   */
+  progressUnavailable?: string;
 }
 
 // Topic type mapping
@@ -188,7 +200,7 @@ async function buildContentTree(
   ctx: FeatureContext,
   courseId: number,
   modules: ContentObject[],
-  progressMap: Map<number, ContentProgress>,
+  progressMap: Map<number, ContentProgress> | null,
   typeFilter: string,
   maxDepth?: number,
   currentDepth: number = 0,
@@ -259,7 +271,9 @@ async function buildContentTree(
         continue;
       }
 
-      const topicProgress = progressMap.get(item.Id);
+      // A null map means progress couldn't be read: completion is unknown,
+      // not false, so a failed read can't pass for "nothing completed".
+      const topicProgress = progressMap?.get(item.Id);
 
       const topic: ContentTopic = {
         type: "topic",
@@ -270,7 +284,7 @@ async function buildContentTree(
         ...(item.IsLocked ? { isLocked: item.IsLocked } : {}),
         ...(item.DueDate ? { dueDate: item.DueDate } : {}),
         lastModified: item.LastModifiedDate ?? null,
-        isCompleted: topicProgress?.IsRead ?? false,
+        isCompleted: progressMap === null ? null : (topicProgress?.IsRead ?? false),
         ...(topicProgress?.DateCompleted ? { completedDate: topicProgress.DateCompleted } : {}),
       };
 
@@ -375,22 +389,24 @@ export async function getCourseContent(ctx: FeatureContext, args: GetCourseConte
     rootModules = rootModules.filter((m) => m.Title.toLowerCase().includes(searchTerm));
   }
 
-  // Fetch user progress for the course (graceful degradation)
-  let progressArray: ContentProgress[] = [];
+  // Fetch user progress for the course (graceful degradation). 403/404 means
+  // this course has no progress data for the user. Any other failure leaves
+  // completion unknown, so the map stays null and every topic reports
+  // isCompleted: null rather than false. A sign-in problem fails the call.
+  let progressMap: Map<number, ContentProgress> | null = new Map();
   try {
-    progressArray = await ctx.api.get<ContentProgress[]>(ctx.api.le(courseId, "/content/userprogress/"), {
+    const progressArray = await ctx.api.get<ContentProgress[]>(ctx.api.le(courseId, "/content/userprogress/"), {
       ttl: DEFAULT_CACHE_TTLS.courseContent,
     });
-  } catch (error: any) {
-    // 404/403 means no progress data available - not an error
-    if (error?.status !== 404 && error?.status !== 403) {
-      log("DEBUG", `Failed to fetch progress for course ${courseId}`, error);
+    for (const p of Array.isArray(progressArray) ? progressArray : []) {
+      progressMap.set(p.ContentObjectId, p);
     }
-  }
-
-  const progressMap = new Map<number, ContentProgress>();
-  for (const p of progressArray) {
-    progressMap.set(p.ContentObjectId, p);
+  } catch (error: any) {
+    if (isAuthUnavailable(error)) throw error;
+    if (error?.status !== 404 && error?.status !== 403) {
+      log("INFO", `Failed to fetch progress for course ${courseId}: completion reported as unknown`, error);
+      progressMap = null;
+    }
   }
 
   let contentTree = await buildContentTree(ctx, courseId, rootModules, progressMap, typeFilter, maxDepth);
@@ -414,7 +430,8 @@ export async function getCourseContent(ctx: FeatureContext, args: GetCourseConte
   log(
     "INFO",
     `getCourseContent: ${moduleCount} modules and ${topicCount} topics for course ${courseId} (filter: ${typeFilter})` +
-      (unreadable > 0 ? `, ${unreadable} module(s) unreadable` : ""),
+      (unreadable > 0 ? `, ${unreadable} module(s) unreadable` : "") +
+      (progressMap === null ? ", progress unavailable" : ""),
   );
 
   return {
@@ -424,6 +441,13 @@ export async function getCourseContent(ctx: FeatureContext, args: GetCourseConte
     topicCount,
     moduleCount,
     ...(modifiedSince ? { modifiedSince, returned: topicCount, filteredOut } : {}),
+    ...(progressMap === null
+      ? {
+          progressUnavailable:
+            "Couldn't read this user's completion progress, so every topic has isCompleted null. " +
+            "Do not report topics as not completed; try again later.",
+        }
+      : {}),
     ...(unreadable > 0
       ? {
           notice:

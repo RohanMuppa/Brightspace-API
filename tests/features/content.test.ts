@@ -481,3 +481,79 @@ describe("getCourseContent courseFiles", () => {
     expect(await courseFilesFor(link("..%2fsecret.pdf") + link("Notes%2fok.pdf"))).toEqual(["Notes/ok.pdf"]);
   });
 });
+
+/**
+ * A failed progress read used to leave every topic isCompleted: false, which
+ * read as "you haven't finished anything". Completion is now null with a
+ * progressUnavailable note, and a sign-in failure fails the call
+ * (port of brightspace-mcp-server#431).
+ */
+describe("getCourseContent progress read failures (brightspace-mcp-server#431)", () => {
+  const TOPIC = {
+    Id: 9,
+    Title: "Lecture 1",
+    ShortTitle: null,
+    Type: 1,
+    TopicType: 1,
+    Description: null,
+    IsHidden: false,
+    IsLocked: false,
+    DueDate: null,
+    LastModifiedDate: null,
+  };
+
+  function setupWithProgress(progress: () => unknown) {
+    return makeCtx(async (path: string) => {
+      if (path.endsWith("/content/userprogress/")) return progress();
+      if (path.endsWith("/content/root/")) return [TOPIC];
+      return [];
+    });
+  }
+
+  it.each([
+    ["a 5xx", () => new ApiError(503, "/content/userprogress/", "Service Unavailable")],
+    ["a network error", () => new TypeError("fetch failed")],
+  ])("reports completion as unknown when the progress read fails with %s", async (_label, makeError) => {
+    const ctx = setupWithProgress(() => {
+      throw makeError();
+    });
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect((result.contentTree[0] as any).isCompleted).toBeNull();
+    expect(result.progressUnavailable).toMatch(/Do not report topics as not completed/);
+  });
+
+  it.each([404, 403])("keeps isCompleted false and adds no note when the progress read answers %i", async (status) => {
+    const ctx = setupWithProgress(() => {
+      throw new ApiError(status, "/content/userprogress/", "No progress");
+    });
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect((result.contentTree[0] as any).isCompleted).toBe(false);
+    expect(result).not.toHaveProperty("progressUnavailable");
+  });
+
+  it("reads completion from progress when the read succeeds", async () => {
+    const ctx = setupWithProgress(() => [{ UserId: 1, ContentObjectId: 9, IsRead: true, DateCompleted: null }]);
+
+    const result = await getCourseContent(ctx, { courseId: COURSE_ID });
+
+    expect((result.contentTree[0] as any).isCompleted).toBe(true);
+    expect(result).not.toHaveProperty("progressUnavailable");
+  });
+
+  it.each([
+    ["a pending MFA sign-in", () => new AuthProcessError("mfaPending", "MFA approval pending")],
+    ["a token that could not be renewed", () => new TokenRefreshError("HTTP 503")],
+    ["an unrecovered 401", () => new ApiError(401, "/content/userprogress/", "Unauthorized")],
+  ])("throws on %s instead of reporting completion as unknown", async (_label, makeError) => {
+    const error = makeError();
+    const ctx = setupWithProgress(() => {
+      throw error;
+    });
+
+    await expect(getCourseContent(ctx, { courseId: COURSE_ID })).rejects.toBe(error);
+  });
+});
