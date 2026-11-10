@@ -9,6 +9,7 @@ import { ApiError, RateLimitError, NetworkError, TokenRefreshError } from "./api
 import { AuthProcessError, type AuthFailureKind } from "./auth/auth-runner.js";
 import { NativeCredentialStoreError } from "./auth/credential-store.js";
 import { DownloadError, isSafeDetail, type DownloadFailureKind } from "./utils/download-errors.js";
+import { SyncInputError } from "./sync/errors.js";
 import { NoTranscriptError, TranscriptFetchError } from "./utils/transcript/errors.js";
 import { AUTH_COMMAND } from "./utils/commands.js";
 import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "./utils/browser-install.js";
@@ -266,6 +267,12 @@ const DOWNLOAD_FAILURE_GUIDANCE: Record<DownloadFailureKind, string> = {
   pathTraversal:
     "The name Brightspace gave this file pointed outside the download directory and was refused. Pass customFilename to choose one yourself.",
   tooLarge: "The file exceeds the download size limit and was not saved.",
+  incomplete: "The connection closed before the whole file arrived, so nothing was saved. Try again.",
+  empty: "The file is empty (0 bytes) on Brightspace, so nothing was saved.",
+  forbiddenDestination:
+    "That folder is not an allowed place to save files: it is the home folder itself, a drive root, a hidden " +
+    "folder, a system folder or an application-data folder. Choose a folder such as ~/Documents/Brightspace, " +
+    "or set D2L_DOWNLOAD_ROOTS to allow it.",
 };
 
 /**
@@ -325,6 +332,10 @@ export function toPublicError(error: unknown): BrightspaceError {
 
   if (error instanceof ZodError) {
     return new BrightspaceInvalidArgumentError(error.issues.map((i) => `${i.path.join(".")}: ${i.message}`));
+  }
+
+  if (error instanceof SyncInputError) {
+    return new BrightspaceInvalidArgumentError([error.message], error.message);
   }
 
   if (error instanceof NoTranscriptError) return new BrightspaceNotFoundError("No transcript is available for this video.");

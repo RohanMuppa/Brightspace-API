@@ -14,7 +14,8 @@ import { log } from "../utils/logger.js";
 // every download path below goes through; importing them here only made it
 // look as though this module validated anything itself.
 import { DownloadError } from "../utils/download-errors.js";
-import { secureStreamDownload } from "../utils/download-helpers.js";
+import { secureStreamDownload, expectedLength } from "../utils/download-helpers.js";
+import { sensitiveDestination, sensitiveDestinationMessage } from "../utils/sensitive-paths.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 import { parseCoursePath, QUICKLINK_PATH } from "../utils/course-files.js";
 import { BrightspaceAuthExpiredError, BrightspaceInvalidArgumentError, BrightspaceNotFoundError } from "../errors.js";
@@ -95,6 +96,7 @@ async function finishDownload(
     filename: customFilename || originalFilename,
     body: response.body,
     maxBytes: DISK_MAX_FILE_SIZE,
+    expectedBytes: expectedLength(response),
   });
 
   log("INFO", `${sourceLabel} downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`);
@@ -143,6 +145,14 @@ export async function downloadFile(ctx: FeatureContext, args: DownloadFileArgs):
     throw new BrightspaceInvalidArgumentError(
       ["downloadPath: not a directory"],
       `Download path is not a directory: ${downloadPath}`
+    );
+  }
+
+  const protectedReason = await sensitiveDestination(downloadPath);
+  if (protectedReason) {
+    throw new BrightspaceInvalidArgumentError(
+      [`downloadPath: ${protectedReason}`],
+      sensitiveDestinationMessage(downloadPath, protectedReason)
     );
   }
 
@@ -207,6 +217,20 @@ async function downloadCourseFile(
 }
 
 /**
+ * Request a content topic's file. Shared with the whole-course sync, which
+ * streams the same response straight into its planned destination.
+ */
+export async function openContentTopic(
+  ctx: FeatureContext,
+  courseId: number,
+  topicId: number,
+  signal?: AbortSignal
+): Promise<Response> {
+  const apiPath = ctx.api.le(courseId, `/content/topics/${topicId}/file`);
+  return ctx.api.getRaw(apiPath, signal ? { signal } : undefined);
+}
+
+/**
  * Download a content file using topicId
  */
 async function downloadContentFile(
@@ -218,8 +242,7 @@ async function downloadContentFile(
 ): Promise<DownloadResult> {
   log("INFO", `Downloading content file: courseId=${courseId}, topicId=${topicId}`);
 
-  const apiPath = ctx.api.le(courseId, `/content/topics/${topicId}/file`);
-  const response = await ctx.api.getRaw(apiPath);
+  const response = await openContentTopic(ctx, courseId, topicId);
 
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const filename = parseContentDispositionFilename(disposition) ?? "download";
