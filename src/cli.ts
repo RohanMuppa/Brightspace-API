@@ -37,6 +37,8 @@ export interface CliDeps {
   /** Injection seam for tests; the real bin loads the actual module. */
   runAuthCli?: () => Promise<unknown>;
   runSetupCli?: () => Promise<unknown>;
+  /** Injection seam for tests; the real bin wires up the sync CLI with the real client and OS signals. */
+  runSyncCli?: (argv: string[], io: { stdout: Writer; stderr: Writer }) => Promise<number>;
 }
 
 type FlagSpec = { type: "string" } | { type: "boolean" };
@@ -178,9 +180,38 @@ function topLevelHelp(): string {
     "",
     "  brightspace auth                        sign in once (opens the MFA flow)",
     "  brightspace setup                       save school and credentials",
+    "  brightspace sync --course ID --dest DIR download every file of a course (sync --help for options)",
     "",
     "Any command accepts --login (browser sign-in on an expired session) and --help.",
   ].join("\n");
+}
+
+/**
+ * The real `sync` entry point: lazily loads the heavier sync module (kept off
+ * every other command's startup path, same as auth/setup), wires it to a real
+ * client on the saved sign-in, and stops the run cleanly on Ctrl-C/SIGTERM.
+ */
+async function defaultRunSyncCli(argv: string[], io: { stdout: Writer; stderr: Writer }): Promise<number> {
+  const { runSync } = await import("./sync/sync-cli.js");
+  const interrupt = new AbortController();
+  const onSignal = (): void => {
+    if (interrupt.signal.aborted) process.exit(130);
+    interrupt.abort("cancelled");
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    return await runSync(argv, { stdout: (t) => io.stdout.write(t), stderr: (t) => io.stderr.write(t) }, {
+      createContext: async () => {
+        const client = await createBrightspaceClient();
+        return { api: client.api, config: client.config, version: "0.0.0" };
+      },
+      signal: interrupt.signal,
+    });
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
 }
 
 function writeError(deps: CliDeps, error: BrightspaceError): number {
@@ -229,6 +260,9 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
   if (name === "setup") {
     await (deps.runSetupCli ?? (() => import("./setup.js")))();
     return null;
+  }
+  if (name === "sync") {
+    return (deps.runSyncCli ?? defaultRunSyncCli)(rest, { stdout: deps.stdout, stderr: deps.stderr });
   }
 
   if (!name || name === "--help" || name === "-h") {
