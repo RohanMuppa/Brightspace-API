@@ -48,6 +48,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getCourseContent` reads `/content/userprogress/`; any failure there other than a 403/404 (a 5xx,
+  a timeout, a network error) was logged at DEBUG and swallowed, so every topic came back
+  `isCompleted: false` and read as "nothing completed". Such a failure now sets every topic's
+  `isCompleted` to `null` (`ContentTopic.isCompleted` is now `boolean | null`) and adds a new
+  `progressUnavailable` note to the result saying completion is unknown; it is logged at INFO. A
+  403/404 is unchanged (`false`, no note). A sign-in problem (unrecovered 401, pending MFA sign-in,
+  token refresh failure) on the progress call now fails the whole call. Ported from
+  [RohanMuppa/brightspace-mcp-server#432](https://github.com/RohanMuppa/brightspace-mcp-server/pull/432)
+  (fixes [RohanMuppa/brightspace-mcp-server#431](https://github.com/RohanMuppa/brightspace-mcp-server/issues/431)).
+
 - `getSyllabus` fetches `/overview/attachment`; a 404 there correctly means no attachment, but any
   other failure (a 403, a 5xx, a timeout, a network error) was logged at DEBUG and swallowed, so
   the result read as "no attachment", and with `downloadPath` it threw `BrightspaceNotFoundError`

@@ -203,7 +203,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
-| `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`) |
+| `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`, `progressUnavailable`) |
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`) |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
@@ -249,6 +249,12 @@ error, an answer that is not a list), the module stays in the tree, under any `t
 modules could not be read and that they must not be reported as empty. `children: []` still means
 the module was read and is empty. `childrenUnavailable` and `notice` are absent when every module
 was read. A sign-in problem throws, as in `getAssignments`.
+
+Each topic's `isCompleted` is `true` or `false` from the user's content progress, or `null` when
+that progress could not be read (a 5xx, a timeout, a network error); the result then carries a
+`progressUnavailable` note saying completion is unknown and topics must not be reported as not
+completed. A 403 or 404 on the progress route still means the course has no progress for the user:
+`isCompleted` stays `false` and there is no note. A sign-in problem on the progress route throws.
 
 `getClasslistEmails` still resolves to an array of `ClasslistEmailEntry`s, leaving out people
 whose email Brightspace hides. When anyone was left out, the array carries a `hiddenCount`
