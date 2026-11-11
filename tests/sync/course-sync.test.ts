@@ -235,10 +235,45 @@ describe("syncCourse: caps and failures", () => {
 
   it("refuses a second concurrent sync into the same destination", async () => {
     const { api } = fakeApi(SIMPLE_TOC, { 10: { body: "x" } });
+    // Either call may reach the lock first, so the test does not assume which one wins.
+    // The winner reads the table of contents only while holding the lock; holding that
+    // read open keeps the lock held until the other call has been refused.
+    let tocReads = 0;
+    let openToc!: () => void;
+    const tocGate = new Promise<void>((resolve) => { openToc = resolve; });
+    let secondTocRead!: () => void;
+    const bothInside = new Promise<"both inside">((resolve) => { secondTocRead = () => resolve("both inside"); });
+    const realGet = api.get.getMockImplementation()!;
+    api.get.mockImplementation(async (p, opts) => {
+      if (p.endsWith("/content/toc")) {
+        tocReads += 1;
+        if (tocReads === 2) secondTocRead();
+        await tocGate;
+      }
+      return realGet(p, opts);
+    });
     const ctx = makeCtx(api);
-    const first = syncCourse(ctx, { courseId: COURSE_ID, destination: root });
-    await expect(syncCourse(ctx, { courseId: COURSE_ID, destination: root })).rejects.toBeInstanceOf(SyncInputError);
-    await first;
+
+    const runs = [
+      syncCourse(ctx, { courseId: COURSE_ID, destination: root }),
+      syncCourse(ctx, { courseId: COURSE_ID, destination: root }),
+    ];
+    // Handlers attached at once, so neither rejection can go unhandled.
+    const settled = Promise.allSettled(runs);
+    // The winner cannot finish while the gate is shut, so the first to settle is the refused one,
+    // unless the lock let both in.
+    const firstOutcome = await Promise.race([...runs.map((run) => run.then(() => "finished", () => "refused")), bothInside]);
+    expect(firstOutcome).toBe("refused");
+    openToc();
+
+    const results = await settled;
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const finished = results.filter((r) => r.status === "fulfilled");
+    expect(refused).toHaveLength(1);
+    expect(finished).toHaveLength(1);
+    expect(refused[0].reason).toBeInstanceOf(SyncInputError);
+    expect((refused[0].reason as Error).message).toMatch(/already running/);
+    expect(tocReads).toBe(1);
   });
 });
 
