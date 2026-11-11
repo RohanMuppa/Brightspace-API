@@ -7,6 +7,30 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- New `downloadCourseFiles()` client method and CLI command `sync` download every file in a
+  course's Content area into a destination folder, in sub-folders named after the course's
+  modules. A rerun only fetches what is new: a `.brightspace-sync.json` manifest in the
+  destination (`src/sync/manifest.ts`) records which files this call wrote, so only those are
+  ever replaced, and the user's own files (or edited copies) are left alone. Options: `existing`
+  (`skip`/`replace`/`keep_both`), `moduleId`, `dryRun`, `maxFiles`, `maxTotalMB`; the CLI mirrors
+  these as `--existing`, `--module`, `--dry-run`, `--json`, `--max-files`. A `.brightspace-sync.lock`
+  (`src/sync/lock.ts`) keeps two syncs from racing the same folder, and names from the course are
+  sanitized to one safe, deduplicated path component per file and folder (`src/sync/names.ts`),
+  with a leading dot prefixed so a course can never create a dotfile in the destination.
+  Destinations are checked against the new `src/utils/sensitive-paths.ts` (the home folder itself,
+  a drive root, a hidden folder, `~/Library`, and system folders are refused, overridable with
+  `D2L_DOWNLOAD_ROOTS`), now enforced centrally in `secureDownload`/`secureStreamDownload` for
+  every download. A body that ends short of its declared `Content-Length` now fails as
+  `DownloadError("incomplete")` instead of silently saving a truncated file, for every download.
+  `D2LApiClient.get()`/`getRaw()` accept an `AbortSignal` so a sync (or any other call) can be
+  cancelled or interrupted without waiting for a hung request. Ported from
+  [RohanMuppa/brightspace-mcp-server#425](https://github.com/RohanMuppa/brightspace-mcp-server/pull/425)
+  (fixes [#106](https://github.com/RohanMuppa/Brightspace-API/issues/106)); this repo has no MCP
+  tool registry or progress-notification relay, so the port is the shared `syncCourse` engine
+  plus a feature method and a CLI command, not a `download_course_files` MCP tool. A locked or
+  not-yet-released file is reported in `failed` here (this repo has no topic-availability helper
+  to explain it separately, unlike the upstream MCP tool's `unavailable` count).
+
 - Automatic sign-in now works at Memorial University of Newfoundland (`https://online.mun.ca`).
   MUN lands on `/d2l/loginh/`, whose "MUN Login" button leads to its CAS server
   (`/d2l/loginh/` -> `/d2l/custom/cas` -> `login.mun.ca/cas/login` -> `/d2l/home`); the default

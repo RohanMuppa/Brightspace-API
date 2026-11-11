@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { secureDownload, secureStreamDownload, resolveFilenameConflict, readBodyCapped } from "../../src/utils/download-helpers.js";
+import { secureDownload, secureStreamDownload, resolveFilenameConflict, readBodyCapped, expectedLength } from "../../src/utils/download-helpers.js";
 import { DownloadError } from "../../src/utils/download-errors.js";
 import { MAX_FILE_SIZE } from "../../src/utils/file-validator.js";
+import { configureDestinationPolicy } from "../../src/utils/sensitive-paths.js";
 
 /**
  * secureDownload is the only thing standing between a filename Brightspace
@@ -316,6 +317,139 @@ describe("secureStreamDownload: large plain text", () => {
     expect(result.size).toBeGreaterThan(MAX_FILE_SIZE);
     expect((await fs.stat(result.path)).size).toBe(result.size);
   }, 30_000);
+});
+
+describe("secureStreamDownload: expectedBytes (truncated downloads)", () => {
+  it("saves the file when every expected byte arrives", async () => {
+    const data = pdfBuffer();
+    const result = await secureStreamDownload({
+      targetDir,
+      filename: "deck.pdf",
+      body: streamOf(data),
+      maxBytes: 1024 * 1024,
+      expectedBytes: data.byteLength,
+    });
+
+    expect(result.size).toBe(data.byteLength);
+  });
+
+  it("fails as incomplete, leaving nothing behind, when fewer bytes arrive than expected", async () => {
+    const attempt = secureStreamDownload({
+      targetDir,
+      filename: "deck.pdf",
+      body: streamOf(Buffer.from("%PDF-1.4\n")),
+      maxBytes: 1024 * 1024,
+      expectedBytes: 10_000,
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "incomplete" });
+    expect(await fs.readdir(targetDir)).toEqual([]);
+  });
+});
+
+describe("secureStreamDownload: empty bodies", () => {
+  it("refuses a 0-byte body instead of saving an empty file", async () => {
+    const attempt = secureStreamDownload({
+      targetDir,
+      filename: "empty.pdf",
+      body: streamOf(),
+      maxBytes: 1024,
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "empty" });
+    expect(await fs.readdir(targetDir)).toEqual([]);
+  });
+});
+
+describe("secureStreamDownload: replaceExisting", () => {
+  it("overwrites the named file in place when replaceExisting is set", async () => {
+    await fs.writeFile(path.join(targetDir, "deck.pdf"), "old copy");
+
+    const result = await secureStreamDownload({
+      targetDir,
+      filename: "deck.pdf",
+      body: streamOf(pdfBuffer()),
+      maxBytes: 1024 * 1024,
+      replaceExisting: true,
+    });
+
+    expect(result.path).toBe(path.join(targetDir, "deck.pdf"));
+    expect(await fs.readdir(targetDir)).toEqual(["deck.pdf"]);
+  });
+
+  it("writes beside the file instead of replacing it when replaceGuard returns false", async () => {
+    await fs.writeFile(path.join(targetDir, "deck.pdf"), "someone edited this");
+
+    const result = await secureStreamDownload({
+      targetDir,
+      filename: "deck.pdf",
+      body: streamOf(pdfBuffer()),
+      maxBytes: 1024 * 1024,
+      replaceExisting: true,
+      replaceGuard: async () => false,
+    });
+
+    expect(result.path).not.toBe(path.join(targetDir, "deck.pdf"));
+    expect(await fs.readFile(path.join(targetDir, "deck.pdf"), "utf-8")).toBe("someone edited this");
+  });
+});
+
+describe("secureStreamDownload: verbatimName", () => {
+  it("uses the given name exactly rather than decoding it again", async () => {
+    const result = await secureStreamDownload({
+      targetDir,
+      filename: "already-planned-name.pdf",
+      body: streamOf(pdfBuffer()),
+      maxBytes: 1024 * 1024,
+      verbatimName: true,
+    });
+
+    expect(path.basename(result.path)).toBe("already-planned-name.pdf");
+  });
+
+  it("refuses a name that is not a single safe path component", async () => {
+    const attempt = secureStreamDownload({
+      targetDir,
+      filename: "../escape.pdf",
+      body: streamOf(pdfBuffer()),
+      maxBytes: 1024 * 1024,
+      verbatimName: true,
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "badFilename" });
+  });
+});
+
+describe("secureDownload and secureStreamDownload: protected destinations", () => {
+  afterEach(() => configureDestinationPolicy({}));
+
+  it("refuses to write into a destination sensitiveDestination rejects", async () => {
+    configureDestinationPolicy({ home: path.dirname(targetDir) });
+    const home = path.dirname(targetDir);
+
+    await expect(secureDownload({ targetDir: home, filename: "x.pdf", data: pdfBuffer() })).rejects.toMatchObject({ kind: "forbiddenDestination" });
+    await expect(
+      secureStreamDownload({ targetDir: home, filename: "x.pdf", body: streamOf(pdfBuffer()), maxBytes: 1024 * 1024 }),
+    ).rejects.toMatchObject({ kind: "forbiddenDestination" });
+  });
+});
+
+describe("expectedLength", () => {
+  it("reads a numeric Content-Length", () => {
+    expect(expectedLength(new Response(null, { headers: { "Content-Length": "1234" } }))).toBe(1234);
+  });
+
+  it("is undefined with no Content-Length", () => {
+    expect(expectedLength(new Response(null))).toBeUndefined();
+  });
+
+  it("is undefined when the body is content-encoded, since the header counts the encoded bytes", () => {
+    expect(expectedLength(new Response(null, { headers: { "Content-Length": "100", "Content-Encoding": "gzip" } }))).toBeUndefined();
+  });
+
+  it("is defined when Content-Encoding is identity", () => {
+    expect(expectedLength(new Response(null, { headers: { "Content-Length": "100", "Content-Encoding": "identity" } }))).toBe(100);
+  });
 });
 
 describe("readBodyCapped", () => {
