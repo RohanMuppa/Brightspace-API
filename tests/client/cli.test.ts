@@ -419,6 +419,34 @@ describe("brightspace CLI auth/setup dispatch", () => {
   });
 });
 
+describe("brightspace CLI sync dispatch", () => {
+  it('main(["sync", ...]) dispatches to the injected sync loader with the arguments after "sync", and returns its exit code', async () => {
+    const runSyncCli = vi.fn(async () => 0);
+    const { deps, createClient } = makeDeps();
+    deps.runSyncCli = runSyncCli;
+
+    const code = await main(["sync", "--course", "7", "--dest", "/tmp/out"], deps);
+
+    expect(runSyncCli).toHaveBeenCalledWith(["--course", "7", "--dest", "/tmp/out"], { stdout: deps.stdout, stderr: deps.stderr });
+    expect(code).toBe(0);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("propagates a non-zero exit code from the sync loader", async () => {
+    const runSyncCli = vi.fn(async () => 2);
+    const { deps } = makeDeps();
+    deps.runSyncCli = runSyncCli;
+
+    expect(await main(["sync"], deps)).toBe(2);
+  });
+
+  it("--help lists sync", async () => {
+    const { deps, stdout } = makeDeps();
+    await main(["--help"], deps);
+    expect(stdout.join("")).toContain("brightspace sync");
+  });
+});
+
 describe("brightspace CLI real process", () => {
   const bin = resolve(root, "build", "cli.js");
 

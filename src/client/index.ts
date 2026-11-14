@@ -30,6 +30,8 @@ import { getAnnouncements, type GetAnnouncementsArgs, type Announcement, type An
 import { getAnnouncementFiles, type GetAnnouncementFilesArgs, type AnnouncementFilesResult } from "../features/announcement-files.js";
 import { getCourseContent, type GetCourseContentArgs, type CourseContentResult } from "../features/content.js";
 import { getSyllabus, type GetSyllabusArgs, type SyllabusResult } from "../features/syllabus.js";
+import { downloadCourseFiles, type DownloadCourseFilesArgs } from "../features/download-course-files.js";
+import type { SyncResult } from "../sync/course-sync.js";
 import type { Course, GetMyCoursesArgs } from "../features/courses.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -197,5 +199,9 @@ export class BrightspaceClient {
 
   getSyllabus(args: GetSyllabusArgs): Promise<SyllabusResult> {
     return this.run(getSyllabus, args);
+  }
+
+  downloadCourseFiles(args: DownloadCourseFilesArgs): Promise<SyncResult> {
+    return this.run(downloadCourseFiles, args);
   }
 }
