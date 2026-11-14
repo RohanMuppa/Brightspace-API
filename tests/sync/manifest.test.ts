@@ -57,7 +57,8 @@ describe("SyncManifest.load", () => {
     await expect(fs.access(path.join(root, MANIFEST_NAME))).rejects.toThrow();
   });
 
-  it("writes the manifest file with restrictive permissions", async () => {
+  // Windows has no POSIX mode bits: stat reports 0o666 whatever mode was asked for.
+  it.runIf(process.platform !== "win32")("writes the manifest file with restrictive permissions", async () => {
     const manifest = await SyncManifest.load(root);
     manifest.set(1, 2, { path: "a.pdf", bytes: 1 });
     await manifest.save();
