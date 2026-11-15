@@ -33,6 +33,7 @@ export type {
   GradeOnlyAssignmentItem,
   AssignmentItem,
   CourseAssignments,
+  UnreadAssignmentsCourse,
   AssignmentsResult,
 } from "./features/assignments.js";
 export type {

@@ -52,9 +52,10 @@ export interface AssignmentFeedback {
 }
 
 /**
- * Why a folder's feedback or a course's quiz list could not be read. Present
- * only where the request failed; the `feedback: null` or the missing quizzes
- * next to it then mean "unknown", never "none".
+ * Why a folder's feedback, a course's assignment (dropbox) list or its quiz
+ * list could not be read. Present only where the request failed; the
+ * `feedback: null` or the missing assignments or quizzes next to it then mean
+ * "unknown", never "none".
  */
 export interface AssignmentDataUnavailable {
   /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_FORBIDDEN`, `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
@@ -120,6 +121,13 @@ export interface CourseAssignments {
   courseName: string;
   assignments: AssignmentItem[];
   /**
+   * Set only when the course's assignment (dropbox) folder list could not be
+   * read (anything but a 404, which means the course has no Assignments tool).
+   * Its dropbox assignments are then missing from `assignments`, not absent;
+   * quizzes and gradebook rows are still listed. Absent otherwise.
+   */
+  assignmentsUnavailable?: AssignmentDataUnavailable;
+  /**
    * Set only when the course's quiz list could not be read (anything but a
    * 404, which means the course has no quiz tool). The quizzes in
    * `assignments` are then only those found through the course content, so a
@@ -128,9 +136,37 @@ export interface CourseAssignments {
   quizzesUnavailable?: AssignmentDataUnavailable;
 }
 
+/**
+ * A course left out of the all-courses result because its assignments could
+ * not be read at all (anything but a 403, which is skipped quietly as in
+ * getMyGrades and getUpcomingDueDates, and a sign-in problem, which throws).
+ */
+export interface UnreadAssignmentsCourse {
+  courseId: number;
+  courseName: string;
+  /** The HTTP status Brightspace answered with, when it answered at all. */
+  status?: number;
+  /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
+  code: BrightspaceErrorCode;
+}
+
 export type AssignmentsResult =
-  | { courseId: number; assignments: AssignmentItem[]; quizzesUnavailable?: AssignmentDataUnavailable }
-  | { courses: CourseAssignments[] };
+  | {
+      courseId: number;
+      assignments: AssignmentItem[];
+      assignmentsUnavailable?: AssignmentDataUnavailable;
+      quizzesUnavailable?: AssignmentDataUnavailable;
+    }
+  | {
+      courses: CourseAssignments[];
+      /**
+       * Present only when at least one course could not be read: those
+       * courses are missing from `courses`, which then is not every course.
+       */
+      unreadCourses?: UnreadAssignmentsCourse[];
+      /** A sentence naming the unread courses; present only with `unreadCourses`. */
+      notice?: string;
+    };
 
 // D2L Dropbox API types
 interface DropboxFolder {
@@ -403,12 +439,16 @@ export async function fetchCourseAssignments(
   return (await fetchCourseInventory(apiClient, courseId, baseUrl)).assignments;
 }
 
-/** fetchCourseAssignments, plus whether the course's quiz list was read. */
+/** fetchCourseAssignments, plus whether the course's assignment and quiz lists were read. */
 async function fetchCourseInventory(
   apiClient: D2LApiClient,
   courseId: number,
   baseUrl?: string
-): Promise<{ assignments: AssignmentItem[]; quizzesUnavailable?: AssignmentDataUnavailable }> {
+): Promise<{
+  assignments: AssignmentItem[];
+  assignmentsUnavailable?: AssignmentDataUnavailable;
+  quizzesUnavailable?: AssignmentDataUnavailable;
+}> {
   const assignments: AssignmentItem[] = [];
 
   // Fetch dropbox folders, quizzes, and the gradebook in parallel. The
@@ -439,6 +479,7 @@ async function fetchCourseInventory(
   }
 
   // Process Dropbox folders
+  let assignmentsUnavailable: AssignmentDataUnavailable | undefined;
   if (dropboxResult.status === "fulfilled") {
     // D2L dropbox endpoint may return paged { Objects: [...] } or flat array
     const dropboxRaw = dropboxResult.value;
@@ -534,8 +575,18 @@ async function fetchCourseInventory(
       assignments.push(assignment);
     }
   } else {
-    // Log dropbox fetch failure but don't throw
+    // Don't throw: the quizzes and gradebook may still have answered. But a
+    // failed list is not "no assignments", so the course says so; a 404 means
+    // the course has no Assignments tool, the same rule as the quiz list
+    // (brightspace-mcp-server#447).
     log("DEBUG", `Failed to fetch dropbox folders for course ${courseId}`, dropboxResult.reason);
+    if ((dropboxResult.reason as any)?.status !== 404) {
+      assignmentsUnavailable = dataUnavailable(
+        dropboxResult.reason,
+        `The assignment (dropbox) list for course ${courseId}`,
+        "its assignments are missing from this list; do not read this course as having no assignments due"
+      );
+    }
   }
 
   // Process quizzes. Content discovery remains useful when the list route is
@@ -668,7 +719,11 @@ async function fetchCourseInventory(
     log("DEBUG", `Failed to fetch the gradebook for course ${courseId}`, gradebookResult.reason);
   }
 
-  return { assignments, ...(quizzesUnavailable ? { quizzesUnavailable } : {}) };
+  return {
+    assignments,
+    ...(assignmentsUnavailable ? { assignmentsUnavailable } : {}),
+    ...(quizzesUnavailable ? { quizzesUnavailable } : {}),
+  };
 }
 
 /**
@@ -727,9 +782,15 @@ export async function getAssignments(
   const { courseId } = GetAssignmentsSchema.parse(args);
 
   if (courseId) {
-    const { assignments, quizzesUnavailable } = await fetchCourseInventory(ctx.api, courseId, ctx.config.baseUrl);
+    const { assignments, assignmentsUnavailable, quizzesUnavailable } =
+      await fetchCourseInventory(ctx.api, courseId, ctx.config.baseUrl);
     log("INFO", `getAssignments: Retrieved ${assignments.length} assignments for course ${courseId}`);
-    return { courseId, assignments, ...(quizzesUnavailable ? { quizzesUnavailable } : {}) };
+    return {
+      courseId,
+      assignments,
+      ...(assignmentsUnavailable ? { assignmentsUnavailable } : {}),
+      ...(quizzesUnavailable ? { quizzesUnavailable } : {}),
+    };
   }
 
   // isActive=true is the configured policy, not a constant: with activeOnly
@@ -759,15 +820,18 @@ export async function getAssignments(
   // Fetch assignments for each course (handle 403s gracefully)
   const assignmentPromises = filteredEnrollments.map(async (item) => {
     try {
-      const { assignments, quizzesUnavailable } = await fetchCourseInventory(ctx.api, item.OrgUnit.Id, ctx.config.baseUrl);
+      const { assignments, assignmentsUnavailable, quizzesUnavailable } =
+        await fetchCourseInventory(ctx.api, item.OrgUnit.Id, ctx.config.baseUrl);
       return {
         courseId: item.OrgUnit.Id,
         courseName: item.OrgUnit.Name,
         assignments,
+        ...(assignmentsUnavailable ? { assignmentsUnavailable } : {}),
         ...(quizzesUnavailable ? { quizzesUnavailable } : {}),
       };
     } catch (error: any) {
-      // 403 means no access (past course, etc) - log and skip
+      // 403 means no access (past course, etc) - log and skip, as getMyGrades
+      // and getUpcomingDueDates do. Anything else is named in unreadCourses.
       if (error?.status === 403) {
         log("DEBUG", `getAssignments: 403 Forbidden for course ${item.OrgUnit.Id} (${item.OrgUnit.Name}) - skipping`);
         return null;
@@ -786,9 +850,35 @@ export async function getAssignments(
     .filter((r): r is PromiseFulfilledResult<CourseAssignments | null> => r.status === "fulfilled" && r.value !== null)
     .map((r) => r.value as CourseAssignments);
 
+  // A course whose inventory failed (a 5xx, a dropped connection, a malformed
+  // payload) is not a course with nothing due. It stays out of `courses`, as
+  // before, and is named here instead (brightspace-mcp-server#447).
+  const unreadCourses = results.flatMap((r, i): UnreadAssignmentsCourse[] => {
+    if (r.status !== "rejected") return [];
+    const item = filteredEnrollments[i];
+    log("INFO", `getAssignments: could not read course ${item.OrgUnit.Id} (${item.OrgUnit.Name})`, r.reason);
+    const status: unknown = (r.reason as any)?.status;
+    return [{
+      courseId: item.OrgUnit.Id,
+      courseName: item.OrgUnit.Name,
+      ...(typeof status === "number" ? { status } : {}),
+      code: toPublicError(r.reason).code,
+    }];
+  });
+
   log(
     "INFO",
-    `getAssignments: Retrieved assignments for ${courses.length} courses (out of ${enrollmentItems.length} enrolled)`
+    `getAssignments: Retrieved assignments for ${courses.length} courses` +
+      `${unreadCourses.length > 0 ? `, ${unreadCourses.length} unread` : ""} (out of ${enrollmentItems.length} enrolled)`
   );
-  return { courses };
+  if (unreadCourses.length === 0) return { courses };
+  return {
+    courses,
+    unreadCourses,
+    notice:
+      `Assignments for ${unreadCourses.length} course(s) could not be read from Brightspace ` +
+      `(${unreadCourses.map((c) => `"${c.courseName}" ${c.courseId}`).join(", ")}), so they are missing ` +
+      "from this list. Do not read those courses as having nothing due: call getAssignments again with " +
+      "that courseId, or check Brightspace.",
+  };
 }

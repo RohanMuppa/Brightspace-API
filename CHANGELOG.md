@@ -72,6 +72,21 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getAssignments` hid two kinds of failed reads. A course whose assignment (dropbox) folder list
+  Brightspace refused or failed (anything but a 404, which means the course has no Assignments
+  tool) was logged at DEBUG and returned with only its quizzes and gradebook rows, so it read as
+  "no assignments due". It now carries a new `assignmentsUnavailable` field — `{ code, status?,
+  notice }`, the same shape as `quizzesUnavailable` — on the single-course result or on its entry in
+  `courses`. And without `courseId`, a course whose read threw anything but a 403 or a sign-in
+  problem vanished from `courses` without a trace; it is still left out of `courses`, but is now
+  named in a new `unreadCourses` field (`{ courseId, courseName, status?, code }[]`) with a
+  `notice`, both present only when at least one course was unread. A whole-course 403 is still
+  skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in problem still
+  throws. Ported from
+  [RohanMuppa/brightspace-mcp-server#448](https://github.com/RohanMuppa/brightspace-mcp-server/pull/448)
+  (fixes [RohanMuppa/brightspace-mcp-server#447](https://github.com/RohanMuppa/brightspace-mcp-server/issues/447)
+  and [#111](https://github.com/RohanMuppa/Brightspace-API/issues/111)).
+
 - `getCourseContent` reads `/content/userprogress/`; any failure there other than a 403/404 (a 5xx,
   a timeout, a network error) was logged at DEBUG and swallowed, so every topic came back
   `isCompleted: false` and read as "nothing completed". Such a failure now sets every topic's
