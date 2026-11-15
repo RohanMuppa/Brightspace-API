@@ -198,7 +198,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `Course[]` |
 | `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with an optional `failedCourses`) |
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `CourseGrades[]` |
-| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` |
+| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
@@ -232,7 +232,16 @@ feedback could not be read (a 403, a 5xx, a network error; a 404 just means no f
 "unknown", not "not graded". A course whose quiz list could not be read (anything but a 404) has
 a `quizzesUnavailable` field of the same shape, on the single-course result or on its entry in
 `courses`: its quizzes are then only those found through the course content, and others may be
-missing. Both fields are absent when the read succeeded.
+missing. A course whose assignment (dropbox) folder list could not be read (anything but a 404,
+which means the course has no Assignments tool) has an `assignmentsUnavailable` field of the same
+shape, in the same places: its dropbox assignments are then missing, not absent, while its quizzes
+and gradebook rows are still listed. Each field is absent when its read succeeded. Without
+`courseId`, a course that could not be read at all (a 5xx, a network error, a malformed payload) is
+still left out of `courses` but named in `unreadCourses` — each `{ courseId, courseName, status?,
+code }` — with a `notice` naming those courses, so a course missing from `courses` is "unknown",
+not "nothing due". Both are absent when every course was read. A course that answers 403 as a
+whole is still skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in
+problem throws.
 
 `getRoster` without `includeStudents` reads the instructors and the TAs on separate routes. When
 one of them could not be read (a 404, a 5xx, a network error), the result lists whoever was read
