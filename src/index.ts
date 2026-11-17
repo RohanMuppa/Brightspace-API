@@ -64,7 +64,13 @@ export type {
   VideoTranscriptAvailable,
   VideoTranscriptResult,
 } from "./features/transcript.js";
-export type { GetAnnouncementsArgs, Announcement, AnnouncementsFiltered } from "./features/announcements.js";
+export type {
+  GetAnnouncementsArgs,
+  Announcement,
+  AnnouncementsList,
+  AnnouncementsFiltered,
+  UnreadAnnouncementsCourse,
+} from "./features/announcements.js";
 export type {
   GetAnnouncementFilesArgs,
   AnnouncementAttachmentInfo,

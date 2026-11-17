@@ -177,6 +177,8 @@ brightspace due --days 3 | jq -r '.[] | "\(.dueDate)\t\(.title)"'
 
 If some courses' due dates could not be read, `brightspace due` still prints the array on stdout
 and exits 0, and adds one line to stderr: `{"failedCourses":[…]}` naming those courses.
+`brightspace announcements` without `--since` does the same with `{"unreadCourses":[…],"notice":"…"}`
+for courses whose announcements could not be read.
 Likewise, when Brightspace hides some people's email, `brightspace emails` prints the visible ones
 on stdout and adds `{"hiddenCount":N,"notice":"…"}` to stderr.
 
@@ -201,7 +203,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
-| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
+| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`, `progressUnavailable`) |
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`) |
@@ -233,6 +235,17 @@ feedback could not be read (a 403, a 5xx, a network error; a 404 just means no f
 a `quizzesUnavailable` field of the same shape, on the single-course result or on its entry in
 `courses`: its quizzes are then only those found through the course content, and others may be
 missing. Both fields are absent when the read succeeded.
+
+`getAnnouncements` without `courseId` reads each course's announcements separately. A course
+whose announcements could not be read (a 403, a 5xx, a network error) is left out of the list but
+named in `unreadCourses` — each `{ courseId, courseName, status?, code }` — with a `notice`
+naming those courses, so a course missing from the list means "unknown", not "no announcements".
+Without `modifiedSince` the result is still an array (`AnnouncementsList`) and both are properties
+on it, like `failedCourses`, which `JSON.stringify` drops; the CLI writes them to stderr as one
+JSON line (`{"unreadCourses":[…],"notice":"…"}`). With `modifiedSince` they are fields of the
+`AnnouncementsFiltered` object. Both are absent when every course was read. Unlike
+`getAssignments`, a 403 is named too, since "anything new?" cannot be answered for that course. A
+sign-in problem throws.
 
 `getRoster` without `includeStudents` reads the instructors and the TAs on separate routes. When
 one of them could not be read (a 404, a 5xx, a network error), the result lists whoever was read

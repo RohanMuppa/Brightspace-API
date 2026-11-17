@@ -246,6 +246,21 @@ function writeHiddenEmails(deps: CliDeps, result: unknown): void {
   }
 }
 
+/**
+ * `getAnnouncements` without `--since` names courses it could not read in
+ * `unreadCourses` and `notice` properties on the array, which JSON.stringify
+ * drops. As with `failedCourses`, stdout stays the bare array and they go to
+ * stderr as one JSON line, so an unread course is never read as "no
+ * announcements". With `--since` they are fields of the stdout object.
+ */
+function writeUnreadCourses(deps: CliDeps, result: unknown): void {
+  if (!Array.isArray(result)) return;
+  const { unreadCourses, notice } = result as { unreadCourses?: unknown[]; notice?: string };
+  if (unreadCourses && unreadCourses.length > 0) {
+    deps.stderr.write(`${JSON.stringify({ unreadCourses, notice })}\n`);
+  }
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -312,6 +327,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     deps.stdout.write(`${JSON.stringify(result)}\n`);
     writeFailedCourses(deps, result);
     writeHiddenEmails(deps, result);
+    writeUnreadCourses(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

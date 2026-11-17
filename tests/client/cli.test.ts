@@ -159,6 +159,19 @@ describe("brightspace CLI argv parsing", () => {
     expect(stderr).toEqual([`${JSON.stringify({ hiddenCount: 2, notice })}\n`]);
   });
 
+  it("announcements keeps stdout a bare array and writes unread courses to stderr", async () => {
+    const item = { id: 1, title: "Hi", courseId: 7 };
+    const unreadCourses = [{ courseId: 8, courseName: "MA 261", status: 503, code: "BRIGHTSPACE_API_ERROR" }];
+    const notice = 'Announcements for 1 course(s) could not be read from Brightspace ("MA 261" 8 (HTTP 503)).';
+    const result = Object.assign([item], { unreadCourses, notice });
+    const getAnnouncements = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getAnnouncements });
+
+    expect(await main(["announcements"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([item])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ unreadCourses, notice })}\n`]);
+  });
+
   it("emails writes nothing to stderr when every email is visible", async () => {
     const getClasslistEmails = vi.fn(async () => [] as never);
     const { deps, stderr } = makeDeps({ getClasslistEmails });

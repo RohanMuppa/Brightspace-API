@@ -26,7 +26,7 @@ import { getDiscussions, type GetDiscussionsArgs, type DiscussionsResult } from 
 import { getRoster, type GetRosterArgs, type RosterResult } from "../features/roster.js";
 import { getClasslistEmails, type GetClasslistEmailsArgs, type ClasslistEmailsResult } from "../features/classlist-emails.js";
 import { getVideoTranscript, type GetVideoTranscriptArgs, type VideoTranscriptResult } from "../features/transcript.js";
-import { getAnnouncements, type GetAnnouncementsArgs, type Announcement, type AnnouncementsFiltered } from "../features/announcements.js";
+import { getAnnouncements, type GetAnnouncementsArgs, type AnnouncementsList, type AnnouncementsFiltered } from "../features/announcements.js";
 import { getAnnouncementFiles, type GetAnnouncementFilesArgs, type AnnouncementFilesResult } from "../features/announcement-files.js";
 import { getCourseContent, type GetCourseContentArgs, type CourseContentResult } from "../features/content.js";
 import { getSyllabus, type GetSyllabusArgs, type SyllabusResult } from "../features/syllabus.js";
@@ -185,7 +185,7 @@ export class BrightspaceClient {
     return this.run(getInfo, undefined);
   }
 
-  getAnnouncements(args?: GetAnnouncementsArgs): Promise<Announcement[] | AnnouncementsFiltered> {
+  getAnnouncements(args?: GetAnnouncementsArgs): Promise<AnnouncementsList | AnnouncementsFiltered> {
     return this.run(getAnnouncements, args);
   }
 
