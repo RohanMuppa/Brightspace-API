@@ -72,6 +72,20 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getAnnouncements` without `courseId` hid courses whose announcements could not be read: a 403
+  came back as an empty list for that course, and any other failure (a 5xx, a network error) was
+  swallowed, so the course read as "no announcements". Such a course is still left out of the
+  list, but is now named in a new `unreadCourses` field (`{ courseId, courseName, status?, code
+  }[]`, new type `UnreadAnnouncementsCourse`) with a `notice`, both present only when at least one
+  course was unread. With `modifiedSince` they are fields of `AnnouncementsFiltered`; without it
+  the result is still an `Announcement[]` (now typed `AnnouncementsList`) and they are properties
+  on the array, as `failedCourses` is on `getUpcomingDueDates`, which the `announcements` CLI
+  command writes to stderr. A 403 is named too, as in the upstream fix. A sign-in problem on any
+  course now throws instead of being swallowed. Ported from
+  [RohanMuppa/brightspace-mcp-server#457](https://github.com/RohanMuppa/brightspace-mcp-server/pull/457)
+  (fixes [RohanMuppa/brightspace-mcp-server#456](https://github.com/RohanMuppa/brightspace-mcp-server/issues/456)
+  and [#114](https://github.com/RohanMuppa/Brightspace-API/issues/114)).
+
 - `getCourseContent` reads `/content/userprogress/`; any failure there other than a 403/404 (a 5xx,
   a timeout, a network error) was logged at DEBUG and swallowed, so every topic came back
   `isCompleted: false` and read as "nothing completed". Such a failure now sets every topic's
