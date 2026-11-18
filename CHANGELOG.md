@@ -72,6 +72,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getAssignments` read a folder's rubrics only in a flattened shape (`Criteria[]`, each with its
+  own `Levels`), so a tenant sending D2L's documented shape (`CriteriaGroups[]`, each with shared
+  `Levels` and criteria whose `Cells` carry the per-level points and description) got every rubric
+  back with `criteria: []`. Both shapes are now read, with the same output fields. A criterion in
+  a named criteria group now carries an optional `group` field (`AssignmentRubricCriterion.group`),
+  and a rubric sent with criteria in neither shape now carries `criteriaUnread: true`
+  (`AssignmentRubric.criteriaUnread`), so its `criteria: []` reads as unknown rather than an empty
+  rubric; both are absent otherwise. Ported from
+  [RohanMuppa/brightspace-mcp-server#458](https://github.com/RohanMuppa/brightspace-mcp-server/issues/458)
+  (fixes [#116](https://github.com/RohanMuppa/Brightspace-API/issues/116)).
+
 - `getAnnouncements` without `courseId` hid courses whose announcements could not be read: a 403
   came back as an empty list for that course, and any other failure (a 5xx, a network error) was
   swallowed, so the course read as "no announcements". Such a course is still left out of the
