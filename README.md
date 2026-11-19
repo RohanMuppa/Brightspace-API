@@ -206,7 +206,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`, `progressUnavailable`) |
-| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`) |
+| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`, `externalSyllabusSources`, `externalSyllabusNote`, `externalSyllabusDiscovery`) |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
 | `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` (`ClasslistEmailEntry[]` with optional `hiddenCount`, `notice`) |
@@ -285,6 +285,16 @@ HTTP statuses) or `BrightspaceNetworkError` saying the attachment could not be r
 was saved, instead of the `BrightspaceNotFoundError` a real 404 still gives. Both fields are absent
 when the attachment was read or is known missing. A sign-in problem throws, as in
 `getAssignments`.
+
+`getSyllabus` also looks for a syllabus tool (e.g. Simple Syllabus) the course links through LTI:
+its LTI 1.1 links, its LTI Advantage (1.3) links, and LTI launches in its content. Matches are
+listed in `externalSyllabusSources` (`{ title, location, url }`, query string or session
+parameters removed); their contents cannot be read. `externalSyllabusDiscovery`
+(`{ complete: false, unavailable, notChecked?, note }`) is set whenever that search is not proof of
+anything: a lookup that was refused or failed is named in `unavailable`, and when nothing was found
+`notChecked: ["course-navbar"]` says the course navbar was never checked, since Brightspace has no
+API for its links. So an empty `externalSyllabusSources` never means "this course has no
+syllabus".
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,

@@ -58,18 +58,36 @@ function headersFrom(entries: Record<string, string>): Headers {
   return new Headers(entries);
 }
 
+/** A route's answer: a value to return, or an error to throw. */
+type Route = unknown | (() => never);
+
+const answer = (route: Route): unknown => (typeof route === "function" ? (route as () => never)() : route);
+
 function setup({
   overview,
   attachment,
+  ltiLinks = [],
+  ltiAdvantageLinks = { Objects: [], Next: null },
+  toc = { Modules: [] },
 }: {
-  overview: unknown | (() => never);
+  overview: Route;
   attachment?: { headers?: Record<string, string>; body: Buffer | ReadableStream<Uint8Array> } | (() => never);
+  /** LTI 1.1 links (/lti/link/{ou}/); an empty list by default. */
+  ltiLinks?: Route;
+  /** LTI Advantage (1.3) links (/ltiadvantage/links/orgunit/{ou}/); an empty page by default. */
+  ltiAdvantageLinks?: Route;
+  /** The content table of contents; no modules by default. */
+  toc?: Route;
 }) {
   const api = {
     le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
-    get: vi.fn(async () => {
-      if (typeof overview === "function") return (overview as () => never)();
-      return overview;
+    leGlobal: (p: string) => `/d2l/api/le/1.0${p}`,
+    get: vi.fn(async (p: string) => {
+      if (p.endsWith(`/${COURSE_ID}/overview`)) return answer(overview);
+      if (p.endsWith(`/lti/link/${COURSE_ID}/`)) return answer(ltiLinks);
+      if (p.endsWith(`/ltiadvantage/links/orgunit/${COURSE_ID}/`)) return answer(ltiAdvantageLinks);
+      if (p.endsWith("/content/toc")) return answer(toc);
+      throw new ApiError(404, p, "Not Found");
     }),
     getRaw: vi.fn(async () => {
       if (!attachment) throw new ApiError(404, "/overview/attachment", "File not found");
@@ -100,12 +118,11 @@ describe("getSyllabus", () => {
     });
 
     const result = await getSyllabus(ctx, { courseId: COURSE_ID });
-    expect(result).toEqual({
-      courseId: COURSE_ID,
-      description: null,
-      hasAttachment: false,
-      message: "No syllabus/overview found for this course.",
-    });
+    expect(result).toMatchObject({ courseId: COURSE_ID, description: null, hasAttachment: false });
+    // Nothing was found, but the course navbar can't be checked, so this is not "no syllabus" (brightspace-mcp-server#449).
+    expect(result.message).not.toBe("No syllabus/overview found for this course.");
+    expect(result.message).toMatch(/navbar/);
+    expect(result.externalSyllabusDiscovery?.notChecked).toEqual(["course-navbar"]);
   });
 
   it("reports hasAttachment:false when the overview has no Description and no attachment", async () => {
@@ -379,5 +396,130 @@ describe("getSyllabus downloadPath", () => {
     });
 
     await expect(getSyllabus(ctx, { courseId: COURSE_ID, downloadPath: targetDir })).rejects.toBe(error);
+  });
+});
+
+describe("getSyllabus external LTI syllabus sources", () => {
+  const EMPTY_OVERVIEW = { Description: null };
+  const tocWith = (topics: unknown[]) => ({ Modules: [{ ModuleId: 1, Title: "Start Here", Modules: [], Topics: topics }] });
+
+  it("lists a visible syllabus LTI 1.1 link without its query string", async () => {
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      ltiLinks: [
+        { LtiLinkId: 7, Title: "Simple Syllabus", Url: "https://s.example/lti?oauth_token=secret", IsVisible: true },
+        { LtiLinkId: 8, Title: "Hidden Syllabus", Url: "https://h.example/lti", IsVisible: false },
+        { LtiLinkId: 9, Title: "Zoom", Url: "https://zoom.example/lti", IsVisible: true },
+      ],
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.externalSyllabusSources).toEqual([{ title: "Simple Syllabus", location: "lti-link", url: "https://s.example/lti" }]);
+    expect(result.externalSyllabusNote).toMatch(/LTI tools cannot be launched/);
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it("reports an enabled syllabus LTI Advantage link, such as a navbar Simple Syllabus (brightspace-mcp-server#449)", async () => {
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      ltiAdvantageLinks: {
+        Objects: [
+          {
+            LinkId: 9,
+            IsEnabled: true,
+            IsAvailable: true,
+            Name: "Simple Syllabus",
+            URL: "https://purdue.simplesyllabus.com/api2/lti13?ctx=abc",
+            CustomParameters: [{ Name: "secret", Value: "do-not-echo" }],
+          },
+        ],
+        Next: null,
+      },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.externalSyllabusSources).toEqual([
+      { title: "Simple Syllabus", location: "lti-link", url: "https://purdue.simplesyllabus.com/api2/lti13" },
+    ]);
+    expect(result.externalSyllabusDiscovery).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("do-not-echo");
+  });
+
+  it("skips LTI Advantage links that are disabled or unavailable", async () => {
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      ltiAdvantageLinks: {
+        Objects: [
+          { LinkId: 9, IsEnabled: false, IsAvailable: true, Name: "Syllabus", URL: "https://a.example/lti13" },
+          { LinkId: 10, IsEnabled: true, IsAvailable: false, Name: "Syllabus", URL: "https://b.example/lti13" },
+        ],
+        Next: null,
+      },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.externalSyllabusSources).toBeUndefined();
+  });
+
+  it("lists a syllabus LTI launch in the course content, keeping routing params but not the session", async () => {
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      toc: tocWith([
+        { Title: "Course Syllabus", Url: "/d2l/le/lti/101/toolLaunch/5?ou=101&d2lSessionVal=abc123" },
+        { Title: "Syllabus.pdf", Url: "/content/enforced/101/Syllabus.pdf" },
+      ]),
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.externalSyllabusSources).toEqual([
+      { title: "Course Syllabus", location: "content", url: "/d2l/le/lti/101/toolLaunch/5?ou=101" },
+    ]);
+  });
+
+  it("reports a forbidden or failed lookup as unavailable, not as nothing found", async () => {
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      ltiLinks: () => {
+        throw new ApiError(403, "/lti/link/101/", "Forbidden");
+      },
+      ltiAdvantageLinks: () => {
+        throw new ApiError(500, "/ltiadvantage/links/orgunit/101/", "Server Error");
+      },
+      toc: () => {
+        throw new NetworkError("fetch failed");
+      },
+    });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.externalSyllabusDiscovery?.complete).toBe(false);
+    expect(result.externalSyllabusDiscovery?.unavailable).toEqual([
+      { lookup: "lti-links", reason: "permission-denied", status: 403 },
+      { lookup: "content-toc", reason: "request-failed" },
+      { lookup: "lti-advantage-links", reason: "request-failed", status: 500 },
+    ]);
+    expect(result.externalSyllabusDiscovery?.note).toMatch(/LTI Advantage links: request failed \(HTTP 500\)/);
+    expect(result.externalSyllabusDiscovery?.note).toMatch(/does not mean the course has no syllabus/);
+  });
+
+  it("says the course navbar was not checked when every lookup succeeds with nothing found (brightspace-mcp-server#449)", async () => {
+    const { ctx } = setup({ overview: { Description: { Text: "Hi", Html: "<p>Hi</p>" } } });
+
+    const result = await getSyllabus(ctx, { courseId: COURSE_ID });
+    expect(result.description).toContain("Hi");
+    expect(result.externalSyllabusSources).toBeUndefined();
+    expect(result.externalSyllabusDiscovery).toMatchObject({ complete: false, unavailable: [], notChecked: ["course-navbar"] });
+    expect(result.externalSyllabusDiscovery?.note).toMatch(/navbar/);
+  });
+
+  it("lets a sign-in problem on a discovery lookup fail the call", async () => {
+    const signIn = new AuthProcessError("failed", "Sign-in failed");
+    const { ctx } = setup({
+      overview: EMPTY_OVERVIEW,
+      ltiAdvantageLinks: () => {
+        throw signIn;
+      },
+    });
+
+    await expect(getSyllabus(ctx, { courseId: COURSE_ID })).rejects.toBe(signIn);
   });
 });

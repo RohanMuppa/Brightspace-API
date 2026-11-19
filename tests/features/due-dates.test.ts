@@ -141,6 +141,57 @@ describe("getUpcomingDueDates", () => {
     expect(items[0].dueDate).toBe(quiz.EndDate);
   });
 
+  it("falls back to the availability end date when an assignment has no DueDate (brightspace-mcp-server#460)", async () => {
+    const end = daysFromNow(3);
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/dropbox/folders/")) {
+        return [
+          { Id: 5, Name: "End date only", DueDate: null, IsHidden: false, Availability: { StartDate: null, EndDate: end } },
+          { Id: 6, Name: "Neither date", DueDate: null, IsHidden: false, Availability: { StartDate: null, EndDate: null } },
+          { Id: 7, Name: "No availability", DueDate: null, IsHidden: false, Availability: null },
+        ];
+      }
+      return [];
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => `${i.type}:${i.id}`)).toEqual(["assignment:5"]);
+    expect(items[0].dueDate).toBe(end);
+    expect(items[0].endDate).toBe(end);
+  });
+
+  it("keeps DueDate over the availability end date when an assignment has both", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/dropbox/folders/")) {
+        return [
+          { Id: 8, Name: "Both", DueDate: daysFromNow(2), IsHidden: false, Availability: { StartDate: null, EndDate: daysFromNow(5) } },
+        ];
+      }
+      return [];
+    });
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items).toHaveLength(1);
+    expect(items[0].dueDate).toBe(daysFromNow(2));
+    expect(items[0].endDate).toBe(daysFromNow(5));
+  });
+
+  it("leaves out an assignment whose availability end date is outside the window", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A);
+      if (path.includes("/dropbox/folders/")) {
+        return [
+          { Id: 9, Name: "Ends later", DueDate: null, IsHidden: false, Availability: { StartDate: null, EndDate: daysFromNow(20) } },
+        ];
+      }
+      return [];
+    });
+
+    expect(await getUpcomingDueDates(ctx, { daysAhead: 7 })).toEqual([]);
+  });
+
   it("skips hidden dropbox folders, inactive quizzes, and items with no due date", async () => {
     const { ctx } = setup((path) => {
       if (path.includes("/enrollments/")) return enrollments(COURSE_A);

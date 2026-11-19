@@ -85,4 +85,12 @@ export type {
   CourseContentResult,
   ChildrenUnavailable,
 } from "./features/content.js";
-export type { GetSyllabusArgs, SyllabusDownload, SyllabusResult } from "./features/syllabus.js";
+export type {
+  GetSyllabusArgs,
+  SyllabusDownload,
+  SyllabusResult,
+  ExternalSyllabusSource,
+  ExternalSyllabusDiscovery,
+  SyllabusDiscoveryLookup,
+  UnavailableSyllabusLookup,
+} from "./features/syllabus.js";

@@ -72,6 +72,41 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getSyllabus` never looked anywhere but the course overview, so a course whose syllabus lives in
+  an external tool such as Simple Syllabus (often an LTI 1.3 link on the course navbar) came back
+  as "No syllabus/overview found for this course." It now also reads the course's LTI 1.1 links
+  (`/lti/link/{ou}/`), LTI Advantage (1.3) links (`/ltiadvantage/links/orgunit/{ou}/`) and content
+  table of contents, and lists syllabus tools it finds in a new `externalSyllabusSources` field
+  (`ExternalSyllabusSource[]`, with `externalSyllabusNote`). A new `externalSyllabusDiscovery`
+  field (`{ complete: false, unavailable, notChecked?, note }`) is set when that search is not
+  proof of anything: a refused or failed lookup is named in `unavailable`, and when nothing was
+  found `notChecked: ["course-navbar"]` says the navbar was not checked (Brightspace has no API for
+  its links). All three fields are optional and new. **Changed behaviour:** with a 404 overview,
+  `message` no longer says "No syllabus/overview found for this course."; it says the course may
+  still have a syllabus elsewhere. A sign-in problem on a lookup fails the call. Ported from
+  [RohanMuppa/brightspace-mcp-server#450](https://github.com/RohanMuppa/brightspace-mcp-server/pull/450)
+  (fixes [RohanMuppa/brightspace-mcp-server#449](https://github.com/RohanMuppa/brightspace-mcp-server/issues/449)),
+  together with the upstream external-syllabus discovery it builds on, which this repo did not
+  have.
+
+- `downloadCourseFiles` (and the `sync` command) on Windows fitted paths to the 250-character
+  budget with one name cap for the whole course, so a single deep path cut every file and folder
+  name in the course to about 30 characters, and a path only a few characters over the budget
+  could fail as "The path is too long" instead of being shortened. Name caps are now kept per
+  module and topic and lowered only for the folders and file on a path that is over the budget,
+  scaled from the names actually on that path, so a path that fits keeps its full names and a
+  slightly-too-long path converges. Ported from
+  [RohanMuppa/brightspace-mcp-server#454](https://github.com/RohanMuppa/brightspace-mcp-server/pull/454)
+  (fixes [RohanMuppa/brightspace-mcp-server#453](https://github.com/RohanMuppa/brightspace-mcp-server/issues/453)).
+
+- `getUpcomingDueDates` left out an assignment whose instructor set only an availability end date
+  and no due date, although the folder stops taking submissions then. Such an assignment is now
+  listed as `type: "assignment"` with that end date as `dueDate` and as `endDate`, the same
+  fallback quizzes already had (`DueDate ?? EndDate`). An assignment with a `DueDate` keeps it as
+  `dueDate`, and its `endDate` is now its availability end date instead of always `null`. Ported
+  from
+  [RohanMuppa/brightspace-mcp-server#460](https://github.com/RohanMuppa/brightspace-mcp-server/issues/460).
+
 - `getAssignments` read a folder's rubrics only in a flattened shape (`Criteria[]`, each with its
   own `Levels`), so a tenant sending D2L's documented shape (`CriteriaGroups[]`, each with shared
   `Levels` and criteria whose `Cells` carry the per-level points and description) got every rubric
