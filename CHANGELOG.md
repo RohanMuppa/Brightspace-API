@@ -72,6 +72,14 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getUpcomingDueDates` left out an assignment whose instructor set only an availability end date
+  and no due date, although the folder stops taking submissions then. Such an assignment is now
+  listed as `type: "assignment"` with that end date as `dueDate` and as `endDate`, the same
+  fallback quizzes already had (`DueDate ?? EndDate`). An assignment with a `DueDate` keeps it as
+  `dueDate`, and its `endDate` is now its availability end date instead of always `null`. Ported
+  from
+  [RohanMuppa/brightspace-mcp-server#460](https://github.com/RohanMuppa/brightspace-mcp-server/issues/460).
+
 - `getAssignments` read a folder's rubrics only in a flattened shape (`Criteria[]`, each with its
   own `Levels`), so a tenant sending D2L's documented shape (`CriteriaGroups[]`, each with shared
   `Levels` and criteria whose `Cells` carry the per-level points and description) got every rubric
