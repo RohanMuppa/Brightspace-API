@@ -302,3 +302,75 @@ describe("syncCourse: cancellation and auth", () => {
     expect(result.notAttempted).toBe(1);
   });
 });
+
+describe("syncCourse: path length", () => {
+  const fileTopic = (id: number, name: string) => ({ TopicId: id, Title: name, TopicType: 1, Url: `/content/enforced/42-C/${name}` });
+  const module_ = (id: number, title: string, topics: unknown[], modules: unknown[] = []) =>
+    ({ ModuleId: id, Title: title, Topics: topics, Modules: modules });
+  const plan = async (toc: unknown, pathBudget: number) => {
+    const { api } = fakeApi(toc, {});
+    return syncCourse(makeCtx(api), { courseId: COURSE_ID, destination: root, dryRun: true, pathBudget });
+  };
+
+  it("keeps full names on paths that fit, when another path in the course is too long (brightspace-mcp-server#453)", async () => {
+    const long = "x".repeat(140);
+    const toc = {
+      Modules: [
+        module_(1, "Introduction to Insects + Science Literacy (Week 1-6)", [
+          fileTopic(10, "Minimum Technology Requirements.html"),
+          fileTopic(11, "InClass_03_SciLitMethods(1).pptx"),
+        ]),
+        module_(2, "Parasites and Pests of Humans (Week 10)", [fileTopic(12, "Product Project Instructions.html")]),
+        module_(3, long, [fileTopic(13, `${long}.pdf`)]),
+      ],
+    };
+    // Tight enough that one cap for the whole course would cut every name to about 30 characters.
+    const budget = root.length + 100;
+    const result = await plan(toc, budget);
+
+    expect(result.planned).toEqual(
+      expect.arrayContaining([
+        "Introduction to Insects + Science Literacy (Week 1-6)/Minimum Technology Requirements.html",
+        "Introduction to Insects + Science Literacy (Week 1-6)/InClass_03_SciLitMethods(1).pptx",
+        "Parasites and Pests of Humans (Week 10)/Product Project Instructions.html",
+      ]),
+    );
+    const longPath = result.planned!.find((p) => p.startsWith("xxx"))!;
+    expect(path.join(root, longPath).length).toBeLessThanOrEqual(budget);
+    expect(longPath.endsWith(".pdf")).toBe(true);
+  });
+
+  it("shortens a path that is only one character over the budget", async () => {
+    const toc = { Modules: [module_(1, "Introduction to Insects + Science Literacy (Week 1-6)", [fileTopic(10, "Minimum Technology Requirements.html")])] };
+    const budget = root.length + 90;
+    const result = await plan(toc, budget);
+
+    expect(result.failed).toEqual([]);
+    expect(result.planned).toHaveLength(1);
+    expect(path.join(root, result.planned![0]).length).toBeLessThanOrEqual(budget);
+    expect(result.planned![0].endsWith(".html")).toBe(true);
+  });
+
+  it("shortens a shared folder once, for every file under it", async () => {
+    const long = "x".repeat(140);
+    const toc = { Modules: [module_(1, long, [fileTopic(10, `${long}.pdf`), fileTopic(11, "short.pdf")])] };
+    const budget = root.length + 120;
+    const result = await plan(toc, budget);
+
+    const folders = new Set(result.planned!.map((p) => p.split("/")[0]));
+    expect(folders.size).toBe(1);
+    expect(result.planned).toContainEqual(expect.stringMatching(/\/short\.pdf$/));
+    for (const p of result.planned!) expect(path.join(root, p).length).toBeLessThanOrEqual(budget);
+  });
+
+  it("shortens nested names so every full path fits the budget", async () => {
+    const long = "x".repeat(140);
+    const toc = { Modules: [module_(1, long, [fileTopic(10, `${long}.pdf`)], [module_(2, `${long}2`, [fileTopic(11, `${long}3.pdf`)])])] };
+    const budget = root.length + 100;
+    const result = await plan(toc, budget);
+
+    expect(result.failed).toEqual([]);
+    expect(result.planned).toHaveLength(2);
+    for (const p of result.planned!) expect(path.join(root, p).length).toBeLessThanOrEqual(budget);
+  });
+});

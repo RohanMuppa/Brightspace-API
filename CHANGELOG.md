@@ -72,6 +72,16 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `downloadCourseFiles` (and the `sync` command) on Windows fitted paths to the 250-character
+  budget with one name cap for the whole course, so a single deep path cut every file and folder
+  name in the course to about 30 characters, and a path only a few characters over the budget
+  could fail as "The path is too long" instead of being shortened. Name caps are now kept per
+  module and topic and lowered only for the folders and file on a path that is over the budget,
+  scaled from the names actually on that path, so a path that fits keeps its full names and a
+  slightly-too-long path converges. Ported from
+  [RohanMuppa/brightspace-mcp-server#454](https://github.com/RohanMuppa/brightspace-mcp-server/pull/454)
+  (fixes [RohanMuppa/brightspace-mcp-server#453](https://github.com/RohanMuppa/brightspace-mcp-server/issues/453)).
+
 - `getUpcomingDueDates` left out an assignment whose instructor set only an availability end date
   and no due date, although the folder stops taking submissions then. Such an assignment is now
   listed as `type: "assignment"` with that end date as `dueDate` and as `endDate`, the same
