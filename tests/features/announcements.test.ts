@@ -559,3 +559,42 @@ describe("getAnnouncements unread courses (#114)", () => {
     await expect(getAnnouncements(ctx)).rejects.toBe(auth);
   });
 });
+
+/**
+ * D2L RichText.Text is plaintext only, with no link URLs, and may be empty
+ * while Html holds the post. The body is read from Html as markdown, falling
+ * back to Text (#121).
+ */
+describe("getAnnouncements body read from Html (#121)", () => {
+  it("keeps the link of an Html-only announcement body", async () => {
+    const { ctx } = setup(
+      oneCourse([
+        news({
+          Id: 1,
+          StartDate: "2026-09-18T00:00:00.000Z",
+          Body: { Text: "", Html: '<p>Slides are <a href="https://example.edu/slides.pdf">here</a>.</p>' },
+        }),
+      ]),
+    );
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toContain("here");
+    expect(items[0].body).toContain("https://example.edu/slides.pdf");
+  });
+
+  it("falls back to Text when Html converts to nothing readable", async () => {
+    const { ctx } = setup(
+      oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Body: { Text: "Plain body", Html: "<p>&nbsp;</p>" } })]),
+    );
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toBe("Plain body");
+  });
+
+  it("keeps body an empty string when the item has no Body", async () => {
+    const { ctx } = setup(oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Body: null })]));
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toBe("");
+  });
+});

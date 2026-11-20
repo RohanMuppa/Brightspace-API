@@ -12,6 +12,7 @@ import type { FeatureContext } from "./context.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import { matchesModifiedSince } from "../utils/modified-since.js";
 import { log } from "../utils/logger.js";
+import { richTextToMarkdown } from "../utils/html-converter.js";
 import { isAuthUnavailable } from "../api/errors.js";
 import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 
@@ -159,7 +160,7 @@ export function mapNewsItem(item: NewsItem): Announcement {
   return {
     id: item.Id,
     title: item.Title,
-    body: item.Body?.Text ?? "",
+    body: richTextToMarkdown(item.Body) ?? "",
     createdBy: item.CreatedBy?.DisplayName ?? "Unknown",
     date: effectiveDate(item),
     isPinned: item.IsPinned,

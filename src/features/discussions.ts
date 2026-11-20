@@ -10,7 +10,7 @@ import { ApiError, isAuthUnavailable } from "../api/errors.js";
 import { GetDiscussionsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { BrightspaceInvalidArgumentError, toPublicError, type BrightspaceErrorCode } from "../errors.js";
-import { convertHtmlToMarkdown } from "../utils/html-converter.js";
+import { convertHtmlToMarkdown, richTextToMarkdown } from "../utils/html-converter.js";
 import { log } from "../utils/logger.js";
 
 export type GetDiscussionsArgs = z.input<typeof GetDiscussionsSchema>;
@@ -237,14 +237,14 @@ async function getForumsOverview(api: D2LApiClient, courseId: number): Promise<D
     result.push({
       forumId: forum.ForumId,
       name: forum.Name,
-      description: forum.Description?.Text ?? null,
+      description: richTextToMarkdown(forum.Description),
       isLocked: forum.IsLocked,
       isHidden: forum.IsHidden,
       topics: topics.map((t) => ({
         topicId: t.TopicId,
         forumId: t.ForumId,
         name: t.Name,
-        description: t.Description?.Text ?? null,
+        description: richTextToMarkdown(t.Description),
         dueDate: t.DueDate,
         isLocked: t.IsLocked,
         isHidden: t.IsHidden,
@@ -287,7 +287,7 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
     topicsWithPosts.push({
       topicId: topic.TopicId,
       name: topic.Name,
-      description: topic.Description?.Html ? convertHtmlToMarkdown(topic.Description.Html).markdown : topic.Description?.Text ?? null,
+      description: richTextToMarkdown(topic.Description),
       dueDate: topic.DueDate,
       isLocked: topic.IsLocked,
       mustPostToParticipate: topic.MustPostToParticipate,
@@ -305,7 +305,7 @@ async function getForumDetail(api: D2LApiClient, courseId: number, forumId: numb
     forum: {
       forumId: forum.ForumId,
       name: forum.Name,
-      description: forum.Description?.Text ?? null,
+      description: richTextToMarkdown(forum.Description),
       isLocked: forum.IsLocked,
       isHidden: forum.IsHidden,
     },
@@ -331,7 +331,7 @@ async function getTopicPosts(api: D2LApiClient, courseId: number, forumId: numbe
     topic: {
       topicId: topic.TopicId,
       name: topic.Name,
-      description: topic.Description?.Html ? convertHtmlToMarkdown(topic.Description.Html).markdown : topic.Description?.Text ?? null,
+      description: richTextToMarkdown(topic.Description),
       dueDate: topic.DueDate,
       isLocked: topic.IsLocked,
       mustPostToParticipate: topic.MustPostToParticipate,
