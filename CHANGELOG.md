@@ -94,6 +94,18 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Fixed
 
+- `getDiscussions` read forum descriptions (and every topic description in the course-wide list)
+  from D2L's `RichText.Text`, which is plaintext only: links lost their URLs, and a description
+  held only in `Html` came back empty from the list while the single-topic view showed it.
+  `getAnnouncements` read announcement `body` the same way. All of them now come from the `Html`
+  converted to markdown (links, lists and tables kept), falling back to `Text` when `Html` is
+  missing or converts to nothing readable (such as `<p>&nbsp;</p>`), through one helper,
+  `richTextToMarkdown` in `src/utils/html-converter.ts`, so every view of the same forum or topic
+  gives the same description. Field names and types are unchanged (`description: string | null`,
+  `body: string`). Fixes [#121](https://github.com/RohanMuppa/Brightspace-API/issues/121); same
+  fix as
+  [RohanMuppa/brightspace-mcp-server#482](https://github.com/RohanMuppa/brightspace-mcp-server/pull/482).
+
 - `getSyllabus` never looked anywhere but the course overview, so a course whose syllabus lives in
   an external tool such as Simple Syllabus (often an LTI 1.3 link on the course navbar) came back
   as "No syllabus/overview found for this course." It now also reads the course's LTI 1.1 links
