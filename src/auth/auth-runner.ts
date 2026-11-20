@@ -10,6 +10,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { log } from "../utils/logger.js";
+import { notifyApprovalNumber } from "../utils/notify.js";
 import { AuthError } from "../utils/errors.js";
 import { AUTH_COMMAND } from "../utils/commands.js";
 import { PLAYWRIGHT_INSTALL_HINT, PLAYWRIGHT_DEPENDENCY_MISSING_HINT } from "../utils/browser-install.js";
@@ -903,6 +904,8 @@ export class AuthRunner {
         if (firstChallenge || matched) {
           this.pendingChallenge = { kind: "mfaPending", numberMatch: matched ?? this.pendingChallenge?.numberMatch };
         }
+        // A sign-in nobody is watching goes stale: put the number on screen (#119). Fire and forget.
+        void notifyApprovalNumber(this.pendingChallenge?.numberMatch);
         if (firstChallenge) resolveChallengeSignal();
         // A caller already polling is answered with a number it was not told
         // (brightspace-mcp-server#229); the rest keep waiting.
