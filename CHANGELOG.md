@@ -7,6 +7,28 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- macOS system notifications, through the new `src/utils/notify.ts` (`/usr/bin/osascript`, the
+  text always passed as `argv` after `--`, never inside the script; never throws; 5 s timeout;
+  `D2L_NOTIFY=0` turns it off; a no-op off macOS). The sign-in approval number now also shows as a
+  notification when a background sign-in is waiting on the phone (`AuthRunner.publishChallenge` in
+  `src/auth/auth-runner.ts`), so a sign-in nobody is watching no longer goes stale. `sync` gained
+  `--notify`: a notification such as `Course "ECE 362": 3 new files`, `could not check everything
+  for new files` when any part of the run failed (never "0 new files"), or `Brightspace sign-in
+  needed`; a run the user cancelled stays quiet. A new `schedule` command (macOS only) creates a
+  per-user launchd agent that runs `sync --notify` for a course once a day at a chosen time
+  (`~/Library/LaunchAgents/com.brightspace-api.sync.<course id>.plist`, mode 0600, only the
+  non-secret `D2L_*` settings copied in); `schedule --list` and `schedule --remove --course <id>`
+  manage it, and add/remove/replace only ever touch a plist whose `Label` is this tool's own.
+  Ported from
+  [RohanMuppa/brightspace-mcp-server#478](https://github.com/RohanMuppa/brightspace-mcp-server/pull/478)
+  (fixes [#119](https://github.com/RohanMuppa/Brightspace-API/issues/119)); this repo has no
+  `assignments`/`announcements` extras in its sync result, so the "new files" count is simply
+  `downloaded.length`, and since there is no single-course lookup endpoint here, the notification's
+  course name is read from the enrollments list (`getMyCourses`'s own endpoint) instead of a
+  per-course `GET`. The launchd agent's `Label` prefix is this package's own
+  (`com.brightspace-api.sync.`, not `brightspace-mcp-server`'s), so the two tools' schedules never
+  collide on a machine that has both installed.
+
 - New `downloadCourseFiles()` client method and CLI command `sync` download every file in a
   course's Content area into a destination folder, in sub-folders named after the course's
   modules. A rerun only fetches what is new: a `.brightspace-sync.json` manifest in the

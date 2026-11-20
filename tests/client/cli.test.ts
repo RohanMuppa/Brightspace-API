@@ -460,6 +460,34 @@ describe("brightspace CLI sync dispatch", () => {
   });
 });
 
+describe("brightspace CLI schedule dispatch", () => {
+  it('main(["schedule", ...]) dispatches to the injected schedule loader with the arguments after "schedule", and returns its exit code', async () => {
+    const runScheduleCli = vi.fn(async () => 0);
+    const { deps, createClient } = makeDeps();
+    deps.runScheduleCli = runScheduleCli;
+
+    const code = await main(["schedule", "--course", "7", "--dest", "/tmp/out", "--at", "08:00"], deps);
+
+    expect(runScheduleCli).toHaveBeenCalledWith(["--course", "7", "--dest", "/tmp/out", "--at", "08:00"], { stdout: deps.stdout, stderr: deps.stderr });
+    expect(code).toBe(0);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("propagates a non-zero exit code from the schedule loader", async () => {
+    const runScheduleCli = vi.fn(async () => 2);
+    const { deps } = makeDeps();
+    deps.runScheduleCli = runScheduleCli;
+
+    expect(await main(["schedule", "--list"], deps)).toBe(2);
+  });
+
+  it("--help lists schedule", async () => {
+    const { deps, stdout } = makeDeps();
+    await main(["--help"], deps);
+    expect(stdout.join("")).toContain("brightspace schedule");
+  });
+});
+
 describe("brightspace CLI real process", () => {
   const bin = resolve(root, "build", "cli.js");
 
