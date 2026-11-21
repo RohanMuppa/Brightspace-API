@@ -311,6 +311,21 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
   }
 }
 
+/**
+ * `getMyCourses` names enrolled courses that D2L_INCLUDE_COURSES or
+ * D2L_EXCLUDE_COURSES hid in `hiddenCourseIds`, `hiddenBy` and `notice`
+ * properties on the array, which JSON.stringify drops. As with
+ * `failedCourses`, stdout stays the bare array and they go to stderr as one
+ * JSON line, so a hidden course is never read as one the user is not in.
+ */
+function writeHiddenCourses(deps: CliDeps, result: unknown): void {
+  if (!Array.isArray(result)) return;
+  const { hiddenCourseIds, hiddenBy, notice } = result as { hiddenCourseIds?: number[]; hiddenBy?: string[]; notice?: string };
+  if (hiddenCourseIds && hiddenCourseIds.length > 0) {
+    deps.stderr.write(`${JSON.stringify({ hiddenCourseIds, hiddenBy, notice })}\n`);
+  }
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -381,6 +396,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     writeFailedCourses(deps, result);
     writeHiddenEmails(deps, result);
     writeUnreadCourses(deps, result);
+    writeHiddenCourses(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

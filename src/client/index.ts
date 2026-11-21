@@ -32,7 +32,7 @@ import { getCourseContent, type GetCourseContentArgs, type CourseContentResult }
 import { getSyllabus, type GetSyllabusArgs, type SyllabusResult } from "../features/syllabus.js";
 import { downloadCourseFiles, type DownloadCourseFilesArgs } from "../features/download-course-files.js";
 import type { SyncResult } from "../sync/course-sync.js";
-import type { Course, GetMyCoursesArgs } from "../features/courses.js";
+import type { GetMyCoursesArgs, MyCoursesResult } from "../features/courses.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_VERSION = (() => {
@@ -141,7 +141,7 @@ export class BrightspaceClient {
     }
   }
 
-  getMyCourses(args?: GetMyCoursesArgs): Promise<Course[]> {
+  getMyCourses(args?: GetMyCoursesArgs): Promise<MyCoursesResult> {
     return this.run(getMyCourses, args);
   }
 

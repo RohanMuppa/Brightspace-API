@@ -5,6 +5,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Fixed
+
+- `getMyCourses` (and `brightspace courses`) no longer hides courses removed by
+  `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; a hidden course read as one
+  the user is not enrolled in. The result is still a `Course[]` of the shown courses (now typed
+  `MyCoursesResult`, a subtype), and when those settings hid any enrolled course it carries
+  `hiddenCourseIds`, `hiddenBy` and a `notice` that they are still readable by `courseId`, the same
+  properties-on-the-array pattern as `getClasslistEmails`' `hiddenCount`. The CLI keeps stdout a
+  bare array and writes them to stderr as one JSON line. Courses dropped by `activeOnly` are not
+  counted (the caller can pass `activeOnly: false`). Port of
+  [brightspace-mcp-server#484](https://github.com/RohanMuppa/brightspace-mcp-server/issues/484);
+  that repo's `D2L_CURRENT_ONLY` does not exist here.
+
 ### Added
 
 - macOS system notifications, through the new `src/utils/notify.ts` (`/usr/bin/osascript`, the
