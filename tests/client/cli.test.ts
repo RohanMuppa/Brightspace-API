@@ -42,6 +42,17 @@ describe("brightspace CLI argv parsing", () => {
     expect(stderr).toEqual([]);
   });
 
+  it("courses keeps stdout a bare array and writes settings-hidden courses to stderr", async () => {
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_EXCLUDE_COURSES), so not listed: 2.";
+    const result = Object.assign([{ id: 1 }], { hiddenCourseIds: [2], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice });
+    const getMyCourses = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getMyCourses });
+
+    expect(await main(["courses"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([{ id: 1 }])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [2], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice })}\n`]);
+  });
+
   it("due [--days N] [--course ID] maps to getUpcomingDueDates", async () => {
     const getUpcomingDueDates = vi.fn(async () => []);
     const { deps } = makeDeps({ getUpcomingDueDates });

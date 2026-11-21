@@ -181,6 +181,8 @@ and exits 0, and adds one line to stderr: `{"failedCourses":[…]}` naming those
 for courses whose announcements could not be read.
 Likewise, when Brightspace hides some people's email, `brightspace emails` prints the visible ones
 on stdout and adds `{"hiddenCount":N,"notice":"…"}` to stderr.
+When `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` hid enrolled courses, `brightspace courses`
+prints the shown ones on stdout and adds `{"hiddenCourseIds":[…],"hiddenBy":[…],"notice":"…"}` to stderr.
 
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
@@ -197,10 +199,10 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 
 | Method | Args | Result |
 |---|---|---|
-| `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `Course[]` |
+| `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `MyCoursesResult` (`Course[]` with optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with an optional `failedCourses`) |
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `CourseGrades[]` |
-| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` |
+| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
@@ -234,7 +236,16 @@ feedback could not be read (a 403, a 5xx, a network error; a 404 just means no f
 "unknown", not "not graded". A course whose quiz list could not be read (anything but a 404) has
 a `quizzesUnavailable` field of the same shape, on the single-course result or on its entry in
 `courses`: its quizzes are then only those found through the course content, and others may be
-missing. Both fields are absent when the read succeeded.
+missing. A course whose assignment (dropbox) folder list could not be read (anything but a 404,
+which means the course has no Assignments tool) has an `assignmentsUnavailable` field of the same
+shape, in the same places: its dropbox assignments are then missing, not absent, while its quizzes
+and gradebook rows are still listed. Each field is absent when its read succeeded. Without
+`courseId`, a course that could not be read at all (a 5xx, a network error, a malformed payload) is
+still left out of `courses` but named in `unreadCourses` — each `{ courseId, courseName, status?,
+code }` — with a `notice` naming those courses, so a course missing from `courses` is "unknown",
+not "nothing due". Both are absent when every course was read. A course that answers 403 as a
+whole is still skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in
+problem throws.
 
 `getAnnouncements` without `courseId` reads each course's announcements separately. A course
 whose announcements could not be read (a 403, a 5xx, a network error) is left out of the list but
@@ -268,6 +279,16 @@ that progress could not be read (a 5xx, a timeout, a network error); the result 
 `progressUnavailable` note saying completion is unknown and topics must not be reported as not
 completed. A 403 or 404 on the progress route still means the course has no progress for the user:
 `isCompleted` stays `false` and there is no note. A sign-in problem on the progress route throws.
+
+`getMyCourses` still resolves to an array of `Course`s, after the configured course filter. When
+the include/exclude course lists (`D2L_INCLUDE_COURSES` / `includeCourses`, `D2L_EXCLUDE_COURSES` /
+`excludeCourses`) left out enrolled courses, the array carries `hiddenCourseIds` (their ids),
+`hiddenBy` (which of the two settings is set) and a `notice` saying how many were hidden and that
+methods taking a `courseId` still read them, so a course missing from the list is not read as one
+the user is not enrolled in. Courses left out by `activeOnly` are not counted: pass
+`activeOnly: false` to see them. All three are absent when nothing was hidden, and like
+`hiddenCount` they are properties on the array that `JSON.stringify` drops; the CLI writes them to
+stderr as one JSON line. (Port of brightspace-mcp-server#484.)
 
 `getClasslistEmails` still resolves to an array of `ClasslistEmailEntry`s, leaving out people
 whose email Brightspace hides. When anyone was left out, the array carries a `hiddenCount`

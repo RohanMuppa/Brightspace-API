@@ -5,6 +5,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ## Unreleased
 
+### Fixed
+
+- `getMyCourses` (and `brightspace courses`) no longer hides courses removed by
+  `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; a hidden course read as one
+  the user is not enrolled in. The result is still a `Course[]` of the shown courses (now typed
+  `MyCoursesResult`, a subtype), and when those settings hid any enrolled course it carries
+  `hiddenCourseIds`, `hiddenBy` and a `notice` that they are still readable by `courseId`, the same
+  properties-on-the-array pattern as `getClasslistEmails`' `hiddenCount`. The CLI keeps stdout a
+  bare array and writes them to stderr as one JSON line. Courses dropped by `activeOnly` are not
+  counted (the caller can pass `activeOnly: false`). Port of
+  [brightspace-mcp-server#484](https://github.com/RohanMuppa/brightspace-mcp-server/issues/484);
+  that repo's `D2L_CURRENT_ONLY` does not exist here.
+
 ### Added
 
 - macOS system notifications, through the new `src/utils/notify.ts` (`/usr/bin/osascript`, the
@@ -93,6 +106,21 @@ All notable changes to `brightspace-api` are documented here. Format follows
   (fixes [#52](https://github.com/RohanMuppa/Brightspace-API/issues/52)).
 
 ### Fixed
+
+- `getAssignments` hid two kinds of failed reads. A course whose assignment (dropbox) folder list
+  Brightspace refused or failed (anything but a 404, which means the course has no Assignments
+  tool) was logged at DEBUG and returned with only its quizzes and gradebook rows, so it read as
+  "no assignments due". It now carries a new `assignmentsUnavailable` field — `{ code, status?,
+  notice }`, the same shape as `quizzesUnavailable` — on the single-course result or on its entry in
+  `courses`. And without `courseId`, a course whose read threw anything but a 403 or a sign-in
+  problem vanished from `courses` without a trace; it is still left out of `courses`, but is now
+  named in a new `unreadCourses` field (`{ courseId, courseName, status?, code }[]`) with a
+  `notice`, both present only when at least one course was unread. A whole-course 403 is still
+  skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in problem still
+  throws. Ported from
+  [RohanMuppa/brightspace-mcp-server#448](https://github.com/RohanMuppa/brightspace-mcp-server/pull/448)
+  (fixes [RohanMuppa/brightspace-mcp-server#447](https://github.com/RohanMuppa/brightspace-mcp-server/issues/447)
+  and [#111](https://github.com/RohanMuppa/Brightspace-API/issues/111)).
 
 - `getDiscussions` read forum descriptions (and every topic description in the course-wide list)
   from D2L's `RichText.Text`, which is plaintext only: links lost their URLs, and a description
