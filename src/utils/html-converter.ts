@@ -123,3 +123,24 @@ export function convertHtmlToMarkdown(
     return { markdown: html, html };
   }
 }
+
+/**
+ * A D2L RichText (`{ Text, Html }`) as a reader should see it. D2L's
+ * RichText.Text is only "the plaintext form of the text": it has no link
+ * targets, and the API does not promise it is present or equal to Html. So
+ * Html leads (as markdown, keeping links, lists and tables), and Text is the
+ * fallback when Html is missing or converts to nothing readable (for example
+ * `<p>&nbsp;</p>`). Returns null when neither has anything.
+ *
+ * **Why:** #121 (port of brightspace-mcp-server#481/#482). Forum and topic
+ * descriptions and announcement bodies came back without their links, and a
+ * description held only in Html came back empty from the course-wide
+ * discussions list while the single-topic view showed it.
+ */
+export function richTextToMarkdown(
+  richText: { Text?: string | null; Html?: string | null } | null | undefined
+): string | null {
+  if (!richText) return null;
+  const markdown = richText.Html ? convertHtmlToMarkdown(richText.Html).markdown.trim() : "";
+  return markdown || (richText.Text ?? null);
+}

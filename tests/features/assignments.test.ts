@@ -1027,3 +1027,125 @@ describe("getAssignments assignment list and unread courses", () => {
     expect(result).not.toHaveProperty("notice");
   });
 });
+
+describe("fetchCourseAssignments rubrics (#116, brightspace-mcp-server#458)", () => {
+  /** Mocked client whose one folder carries the given rubrics. */
+  function clientWithRubrics(rubrics: unknown[]) {
+    return {
+      le: (orgUnitId: number, p: string) => `/d2l/api/le/1.0/${orgUnitId}${p}`,
+      get: vi.fn(async (path: string) => {
+        if (path.endsWith("/dropbox/folders/")) {
+          return [
+            {
+              Id: 55,
+              Name: "HW 1",
+              DueDate: null,
+              IsHidden: false,
+              Assessment: { ScoreDenominator: 10, Rubrics: rubrics },
+            },
+          ];
+        }
+        if (path.endsWith("/quizzes/")) return { Objects: [] };
+        throw notFound();
+      }),
+    };
+  }
+
+  async function rubricsOf(rubrics: unknown[]) {
+    const [folder] = await fetchCourseAssignments(clientWithRubrics(rubrics) as any, COURSE_ID);
+    if (folder.type !== "assignment") throw new Error("expected a dropbox folder");
+    return folder.rubric;
+  }
+
+  it("reads the flat Criteria shape as before", async () => {
+    const rubric = await rubricsOf([
+      {
+        RubricId: 1,
+        Name: "Essay",
+        Criteria: [
+          {
+            CriterionId: 10,
+            Name: "Thesis",
+            Levels: [
+              { LevelId: 100, Name: "Strong", Points: 5, Description: { Text: "Clear", Html: "<p>Clear</p>" } },
+              { LevelId: 101, Name: "Weak", Points: 1, Description: null },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(rubric).toEqual([
+      {
+        name: "Essay",
+        criteria: [
+          {
+            name: "Thesis",
+            levels: [
+              { name: "Strong", points: 5, description: "Clear" },
+              { name: "Weak", points: 1, description: null },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("reads the documented CriteriaGroups shape, joining Cells to the group's Levels", async () => {
+    const rubric = await rubricsOf([
+      {
+        RubricId: 2,
+        Name: "Lab report",
+        CriteriaGroups: [
+          {
+            Name: "Content",
+            Levels: [
+              { Id: 200, Name: "Excellent", Points: 4 },
+              { Id: 201, Name: "Poor", Points: 0 },
+            ],
+            Criteria: [
+              {
+                Id: 20,
+                Name: "Method",
+                Cells: [
+                  { LevelId: 200, Points: 4, Description: { Text: "All steps", Html: "" } },
+                  { LevelId: 201, Points: 0, Description: { Text: "", Html: "<p>Missing</p>" } },
+                ],
+              },
+            ],
+          },
+          {
+            Name: null,
+            Levels: [{ Id: 300, Name: "Met", Points: 2 }],
+            Criteria: [{ Id: 30, Name: "Format", Cells: [{ LevelId: 300, Points: null, Description: null }] }],
+          },
+        ],
+      },
+    ]);
+
+    expect(rubric).toEqual([
+      {
+        name: "Lab report",
+        criteria: [
+          {
+            name: "Method",
+            group: "Content",
+            levels: [
+              { name: "Excellent", points: 4, description: "All steps" },
+              { name: "Poor", points: 0, description: "Missing" },
+            ],
+          },
+          // An unnamed group adds no group field; a cell without points takes its level's.
+          { name: "Format", levels: [{ name: "Met", points: 2, description: null }] },
+        ],
+      },
+    ]);
+    expect(rubric?.[0]).not.toHaveProperty("criteriaUnread");
+  });
+
+  it("flags a rubric sent without criteria in either shape as unread, not empty", async () => {
+    const rubric = await rubricsOf([{ RubricId: 3, Name: "Presentation" }]);
+
+    expect(rubric).toEqual([{ name: "Presentation", criteria: [], criteriaUnread: true }]);
+  });
+});

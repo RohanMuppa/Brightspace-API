@@ -3,6 +3,8 @@ import { getAnnouncements } from "../../src/features/announcements.js";
 import type { FeatureContext } from "../../src/features/context.js";
 import type { AppConfig } from "../../src/types/index.js";
 import { ZodError } from "zod";
+import { ApiError, TokenRefreshError } from "../../src/api/errors.js";
+import { AuthProcessError } from "../../src/auth/auth-runner.js";
 
 /**
  * getAnnouncements used to show every news item the API returned, sorted by
@@ -457,5 +459,142 @@ describe("getAnnouncements attachments", () => {
 
     const items = (await getAnnouncements(ctx, {})) as any[];
     expect(items[0]).toMatchObject({ courseId: COURSE_A.Id, attachments: [{ fileId: 77, fileName: "rubric.pdf", size: 100 }] });
+  });
+});
+
+/**
+ * In the all-courses form, a course whose /news/ read failed used to vanish:
+ * a 403 came back as [] and anything else was swallowed by allSettled, so
+ * "anything new?" read an unread course as "nothing new" (#114, port of
+ * brightspace-mcp-server#456). Such a course is now named in unreadCourses
+ * with a notice; a sign-in problem fails the whole call.
+ */
+describe("getAnnouncements unread courses (#114)", () => {
+  const posted = news({ Id: 1, Title: "A post", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z" });
+
+  /** COURSE_A answers with one post; COURSE_B's news route throws `failure`. */
+  const bFails = (failure: () => unknown): Responder => (path) => {
+    if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+    if (path.includes(`/${COURSE_B.Id}/news/`)) throw failure();
+    return [posted];
+  };
+
+  it("names a 5xx course on the bare array, which keeps its shape", async () => {
+    const { ctx } = setup(bFails(() => new ApiError(503, "/news/", "unavailable")));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(JSON.parse(JSON.stringify(result))).toHaveLength(1);
+    expect(result.unreadCourses).toEqual([
+      { courseId: COURSE_B.Id, courseName: COURSE_B.Name, status: 503, code: "BRIGHTSPACE_API_ERROR" },
+    ]);
+    expect(result.notice).toContain(`"${COURSE_B.Name}" ${COURSE_B.Id} (HTTP 503)`);
+    expect(result.notice).toContain("Do not read those courses as having no announcements");
+  });
+
+  it("names a 5xx course on the modifiedSince object", async () => {
+    const { ctx } = setup(bFails(() => new ApiError(500, "/news/", "boom")));
+
+    const result = (await getAnnouncements(ctx, { modifiedSince: "2026-01-01T00:00:00Z" })) as any;
+    expect(result.announcements.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.returned).toBe(1);
+    expect(result.unreadCourses).toEqual([
+      { courseId: COURSE_B.Id, courseName: COURSE_B.Name, status: 500, code: "BRIGHTSPACE_API_ERROR" },
+    ]);
+    expect(result.notice).toContain(`"${COURSE_B.Name}" ${COURSE_B.Id}`);
+  });
+
+  it("names a course whose read failed without a status, leaving status out", async () => {
+    const { ctx } = setup(bFails(() => new TypeError("fetch failed")));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result.unreadCourses).toHaveLength(1);
+    expect(result.unreadCourses[0]).not.toHaveProperty("status");
+    expect(result.unreadCourses[0].courseId).toBe(COURSE_B.Id);
+    expect(result.notice).not.toContain("HTTP");
+  });
+
+  it("names a 403 course too, instead of reading it as no announcements", async () => {
+    const { ctx } = setup(bFails(() => new ApiError(403, "/news/", "forbidden")));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses).toEqual([
+      { courseId: COURSE_B.Id, courseName: COURSE_B.Name, status: 403, code: "BRIGHTSPACE_FORBIDDEN" },
+    ]);
+    expect(result.notice).toContain("(HTTP 403)");
+  });
+
+  it("adds neither field when every course was read", async () => {
+    const { ctx } = setup(manyCourses({ [COURSE_A.Id]: [posted], [COURSE_B.Id]: [] }));
+
+    const list = (await getAnnouncements(ctx)) as any;
+    expect(list).not.toHaveProperty("unreadCourses");
+    expect(list).not.toHaveProperty("notice");
+
+    const filtered = (await getAnnouncements(ctx, { modifiedSince: "2026-01-01T00:00:00Z" })) as any;
+    expect(filtered).not.toHaveProperty("unreadCourses");
+    expect(filtered).not.toHaveProperty("notice");
+  });
+
+  it.each([
+    ["an unrecovered 401", () => new ApiError(401, "/news/", "expired")],
+    ["a pending MFA sign-in", () => new AuthProcessError("mfaPending", "MFA approval pending")],
+    ["a token refresh failure", () => new TokenRefreshError("down")],
+  ])("throws instead of returning an empty list when every course fails with %s", async (_label, failure) => {
+    const error = failure();
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      throw error;
+    });
+
+    await expect(getAnnouncements(ctx)).rejects.toBe(error);
+    await expect(getAnnouncements(ctx, { modifiedSince: "2026-01-01T00:00:00Z" })).rejects.toBe(error);
+  });
+
+  it("throws when only one course fails sign-in", async () => {
+    const auth = new ApiError(401, "/news/", "expired");
+    const { ctx } = setup(bFails(() => auth));
+    await expect(getAnnouncements(ctx)).rejects.toBe(auth);
+  });
+});
+
+/**
+ * D2L RichText.Text is plaintext only, with no link URLs, and may be empty
+ * while Html holds the post. The body is read from Html as markdown, falling
+ * back to Text (#121).
+ */
+describe("getAnnouncements body read from Html (#121)", () => {
+  it("keeps the link of an Html-only announcement body", async () => {
+    const { ctx } = setup(
+      oneCourse([
+        news({
+          Id: 1,
+          StartDate: "2026-09-18T00:00:00.000Z",
+          Body: { Text: "", Html: '<p>Slides are <a href="https://example.edu/slides.pdf">here</a>.</p>' },
+        }),
+      ]),
+    );
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toContain("here");
+    expect(items[0].body).toContain("https://example.edu/slides.pdf");
+  });
+
+  it("falls back to Text when Html converts to nothing readable", async () => {
+    const { ctx } = setup(
+      oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Body: { Text: "Plain body", Html: "<p>&nbsp;</p>" } })]),
+    );
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toBe("Plain body");
+  });
+
+  it("keeps body an empty string when the item has no Body", async () => {
+    const { ctx } = setup(oneCourse([news({ Id: 1, StartDate: "2026-09-18T00:00:00.000Z", Body: null })]));
+
+    const items = (await getAnnouncements(ctx, { courseId: COURSE_A.Id })) as any[];
+    expect(items[0].body).toBe("");
   });
 });

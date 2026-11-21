@@ -39,6 +39,8 @@ export interface CliDeps {
   runSetupCli?: () => Promise<unknown>;
   /** Injection seam for tests; the real bin wires up the sync CLI with the real client and OS signals. */
   runSyncCli?: (argv: string[], io: { stdout: Writer; stderr: Writer }) => Promise<number>;
+  /** Injection seam for tests; the real bin wires up the schedule CLI with the real filesystem and launchctl. */
+  runScheduleCli?: (argv: string[], io: { stdout: Writer; stderr: Writer }) => Promise<number>;
 }
 
 type FlagSpec = { type: "string" } | { type: "boolean" };
@@ -181,6 +183,7 @@ function topLevelHelp(): string {
     "  brightspace auth                        sign in once (opens the MFA flow)",
     "  brightspace setup                       save school and credentials",
     "  brightspace sync --course ID --dest DIR download every file of a course (sync --help for options)",
+    "  brightspace schedule --course ID --dest DIR --at HH:MM run sync every day (macOS; schedule --help)",
     "",
     "Any command accepts --login (browser sign-in on an expired session) and --help.",
   ].join("\n");
@@ -212,6 +215,53 @@ async function defaultRunSyncCli(argv: string[], io: { stdout: Writer; stderr: W
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
+}
+
+/**
+ * The real `schedule` entry point (macOS only; #119): lazily loads the
+ * schedule module and wires it to the real filesystem, launchctl and session
+ * location, the same way defaultRunSyncCli wires up a real client.
+ */
+async function defaultRunScheduleCli(argv: string[], io: { stdout: Writer; stderr: Writer }): Promise<number> {
+  const { runSchedule } = await import("./sync/schedule-cli.js");
+  const { resolveSessionLocation } = await import("./utils/config.js");
+  const { sensitiveDestination } = await import("./utils/sensitive-paths.js");
+  const { writeFileAtomic } = await import("./utils/atomic-write.js");
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { execFile } = await import("node:child_process");
+
+  const scheduleFs = {
+    mkdir: (dir: string, options: { recursive: true; mode?: number }) => fs.mkdir(dir, options),
+    chmod: (dir: string, mode: number) => fs.chmod(dir, mode),
+    readdir: (dir: string) => fs.readdir(dir),
+    readFile: (file: string) => fs.readFile(file, "utf8"),
+    writeFileAtomic: (file: string, data: string, options: { mode: number }) => writeFileAtomic(file, data, options),
+    rm: (file: string) => fs.rm(file, { force: true }),
+    exists: (file: string) => fs.access(file).then(() => true, () => false),
+  };
+  const launchctl = (args: string[]): Promise<{ code: number; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile("/bin/launchctl", args, { timeout: 15000, windowsHide: true }, (error, _stdout, stderr) => {
+        const code = error ? (typeof (error as NodeJS.ErrnoException).code === "number" ? (error as unknown as { code: number }).code : 1) : 0;
+        resolve({ code, stderr: String(stderr ?? "").trim() });
+      });
+    });
+  const entry = process.argv[1] ? await fs.realpath(process.argv[1]).catch(() => path.resolve(process.argv[1])) : "";
+
+  return runSchedule(argv, { stdout: (t) => io.stdout.write(t), stderr: (t) => io.stderr.write(t) }, {
+    platform: process.platform,
+    uid: process.getuid?.() ?? 0,
+    agentsDir: path.join(os.homedir(), "Library", "LaunchAgents"),
+    logDir: path.join(resolveSessionLocation().sessionRoot, "logs"),
+    env: process.env,
+    nodePath: process.execPath,
+    scriptPath: entry,
+    launchctl,
+    fs: scheduleFs,
+    checkDestination: (dir) => sensitiveDestination(dir),
+  });
 }
 
 function writeError(deps: CliDeps, error: BrightspaceError): number {
@@ -246,6 +296,21 @@ function writeHiddenEmails(deps: CliDeps, result: unknown): void {
   }
 }
 
+/**
+ * `getAnnouncements` without `--since` names courses it could not read in
+ * `unreadCourses` and `notice` properties on the array, which JSON.stringify
+ * drops. As with `failedCourses`, stdout stays the bare array and they go to
+ * stderr as one JSON line, so an unread course is never read as "no
+ * announcements". With `--since` they are fields of the stdout object.
+ */
+function writeUnreadCourses(deps: CliDeps, result: unknown): void {
+  if (!Array.isArray(result)) return;
+  const { unreadCourses, notice } = result as { unreadCourses?: unknown[]; notice?: string };
+  if (unreadCourses && unreadCourses.length > 0) {
+    deps.stderr.write(`${JSON.stringify({ unreadCourses, notice })}\n`);
+  }
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -263,6 +328,9 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
   }
   if (name === "sync") {
     return (deps.runSyncCli ?? defaultRunSyncCli)(rest, { stdout: deps.stdout, stderr: deps.stderr });
+  }
+  if (name === "schedule") {
+    return (deps.runScheduleCli ?? defaultRunScheduleCli)(rest, { stdout: deps.stdout, stderr: deps.stderr });
   }
 
   if (!name || name === "--help" || name === "-h") {
@@ -312,6 +380,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     deps.stdout.write(`${JSON.stringify(result)}\n`);
     writeFailedCourses(deps, result);
     writeHiddenEmails(deps, result);
+    writeUnreadCourses(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

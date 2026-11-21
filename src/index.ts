@@ -65,7 +65,13 @@ export type {
   VideoTranscriptAvailable,
   VideoTranscriptResult,
 } from "./features/transcript.js";
-export type { GetAnnouncementsArgs, Announcement, AnnouncementsFiltered } from "./features/announcements.js";
+export type {
+  GetAnnouncementsArgs,
+  Announcement,
+  AnnouncementsList,
+  AnnouncementsFiltered,
+  UnreadAnnouncementsCourse,
+} from "./features/announcements.js";
 export type {
   GetAnnouncementFilesArgs,
   AnnouncementAttachmentInfo,
@@ -80,4 +86,12 @@ export type {
   CourseContentResult,
   ChildrenUnavailable,
 } from "./features/content.js";
-export type { GetSyllabusArgs, SyllabusDownload, SyllabusResult } from "./features/syllabus.js";
+export type {
+  GetSyllabusArgs,
+  SyllabusDownload,
+  SyllabusResult,
+  ExternalSyllabusSource,
+  ExternalSyllabusDiscovery,
+  SyllabusDiscoveryLookup,
+  UnavailableSyllabusLookup,
+} from "./features/syllabus.js";

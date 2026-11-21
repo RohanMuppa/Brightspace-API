@@ -7,6 +7,28 @@ All notable changes to `brightspace-api` are documented here. Format follows
 
 ### Added
 
+- macOS system notifications, through the new `src/utils/notify.ts` (`/usr/bin/osascript`, the
+  text always passed as `argv` after `--`, never inside the script; never throws; 5 s timeout;
+  `D2L_NOTIFY=0` turns it off; a no-op off macOS). The sign-in approval number now also shows as a
+  notification when a background sign-in is waiting on the phone (`AuthRunner.publishChallenge` in
+  `src/auth/auth-runner.ts`), so a sign-in nobody is watching no longer goes stale. `sync` gained
+  `--notify`: a notification such as `Course "ECE 362": 3 new files`, `could not check everything
+  for new files` when any part of the run failed (never "0 new files"), or `Brightspace sign-in
+  needed`; a run the user cancelled stays quiet. A new `schedule` command (macOS only) creates a
+  per-user launchd agent that runs `sync --notify` for a course once a day at a chosen time
+  (`~/Library/LaunchAgents/com.brightspace-api.sync.<course id>.plist`, mode 0600, only the
+  non-secret `D2L_*` settings copied in); `schedule --list` and `schedule --remove --course <id>`
+  manage it, and add/remove/replace only ever touch a plist whose `Label` is this tool's own.
+  Ported from
+  [RohanMuppa/brightspace-mcp-server#478](https://github.com/RohanMuppa/brightspace-mcp-server/pull/478)
+  (fixes [#119](https://github.com/RohanMuppa/Brightspace-API/issues/119)); this repo has no
+  `assignments`/`announcements` extras in its sync result, so the "new files" count is simply
+  `downloaded.length`, and since there is no single-course lookup endpoint here, the notification's
+  course name is read from the enrollments list (`getMyCourses`'s own endpoint) instead of a
+  per-course `GET`. The launchd agent's `Label` prefix is this package's own
+  (`com.brightspace-api.sync.`, not `brightspace-mcp-server`'s), so the two tools' schedules never
+  collide on a machine that has both installed.
+
 - New `downloadCourseFiles()` client method and CLI command `sync` download every file in a
   course's Content area into a destination folder, in sub-folders named after the course's
   modules. A rerun only fetches what is new: a `.brightspace-sync.json` manifest in the
@@ -86,6 +108,78 @@ All notable changes to `brightspace-api` are documented here. Format follows
   [RohanMuppa/brightspace-mcp-server#448](https://github.com/RohanMuppa/brightspace-mcp-server/pull/448)
   (fixes [RohanMuppa/brightspace-mcp-server#447](https://github.com/RohanMuppa/brightspace-mcp-server/issues/447)
   and [#111](https://github.com/RohanMuppa/Brightspace-API/issues/111)).
+
+- `getDiscussions` read forum descriptions (and every topic description in the course-wide list)
+  from D2L's `RichText.Text`, which is plaintext only: links lost their URLs, and a description
+  held only in `Html` came back empty from the list while the single-topic view showed it.
+  `getAnnouncements` read announcement `body` the same way. All of them now come from the `Html`
+  converted to markdown (links, lists and tables kept), falling back to `Text` when `Html` is
+  missing or converts to nothing readable (such as `<p>&nbsp;</p>`), through one helper,
+  `richTextToMarkdown` in `src/utils/html-converter.ts`, so every view of the same forum or topic
+  gives the same description. Field names and types are unchanged (`description: string | null`,
+  `body: string`). Fixes [#121](https://github.com/RohanMuppa/Brightspace-API/issues/121); same
+  fix as
+  [RohanMuppa/brightspace-mcp-server#482](https://github.com/RohanMuppa/brightspace-mcp-server/pull/482).
+
+- `getSyllabus` never looked anywhere but the course overview, so a course whose syllabus lives in
+  an external tool such as Simple Syllabus (often an LTI 1.3 link on the course navbar) came back
+  as "No syllabus/overview found for this course." It now also reads the course's LTI 1.1 links
+  (`/lti/link/{ou}/`), LTI Advantage (1.3) links (`/ltiadvantage/links/orgunit/{ou}/`) and content
+  table of contents, and lists syllabus tools it finds in a new `externalSyllabusSources` field
+  (`ExternalSyllabusSource[]`, with `externalSyllabusNote`). A new `externalSyllabusDiscovery`
+  field (`{ complete: false, unavailable, notChecked?, note }`) is set when that search is not
+  proof of anything: a refused or failed lookup is named in `unavailable`, and when nothing was
+  found `notChecked: ["course-navbar"]` says the navbar was not checked (Brightspace has no API for
+  its links). All three fields are optional and new. **Changed behaviour:** with a 404 overview,
+  `message` no longer says "No syllabus/overview found for this course."; it says the course may
+  still have a syllabus elsewhere. A sign-in problem on a lookup fails the call. Ported from
+  [RohanMuppa/brightspace-mcp-server#450](https://github.com/RohanMuppa/brightspace-mcp-server/pull/450)
+  (fixes [RohanMuppa/brightspace-mcp-server#449](https://github.com/RohanMuppa/brightspace-mcp-server/issues/449)),
+  together with the upstream external-syllabus discovery it builds on, which this repo did not
+  have.
+
+- `downloadCourseFiles` (and the `sync` command) on Windows fitted paths to the 250-character
+  budget with one name cap for the whole course, so a single deep path cut every file and folder
+  name in the course to about 30 characters, and a path only a few characters over the budget
+  could fail as "The path is too long" instead of being shortened. Name caps are now kept per
+  module and topic and lowered only for the folders and file on a path that is over the budget,
+  scaled from the names actually on that path, so a path that fits keeps its full names and a
+  slightly-too-long path converges. Ported from
+  [RohanMuppa/brightspace-mcp-server#454](https://github.com/RohanMuppa/brightspace-mcp-server/pull/454)
+  (fixes [RohanMuppa/brightspace-mcp-server#453](https://github.com/RohanMuppa/brightspace-mcp-server/issues/453)).
+
+- `getUpcomingDueDates` left out an assignment whose instructor set only an availability end date
+  and no due date, although the folder stops taking submissions then. Such an assignment is now
+  listed as `type: "assignment"` with that end date as `dueDate` and as `endDate`, the same
+  fallback quizzes already had (`DueDate ?? EndDate`). An assignment with a `DueDate` keeps it as
+  `dueDate`, and its `endDate` is now its availability end date instead of always `null`. Ported
+  from
+  [RohanMuppa/brightspace-mcp-server#460](https://github.com/RohanMuppa/brightspace-mcp-server/issues/460).
+
+- `getAssignments` read a folder's rubrics only in a flattened shape (`Criteria[]`, each with its
+  own `Levels`), so a tenant sending D2L's documented shape (`CriteriaGroups[]`, each with shared
+  `Levels` and criteria whose `Cells` carry the per-level points and description) got every rubric
+  back with `criteria: []`. Both shapes are now read, with the same output fields. A criterion in
+  a named criteria group now carries an optional `group` field (`AssignmentRubricCriterion.group`),
+  and a rubric sent with criteria in neither shape now carries `criteriaUnread: true`
+  (`AssignmentRubric.criteriaUnread`), so its `criteria: []` reads as unknown rather than an empty
+  rubric; both are absent otherwise. Ported from
+  [RohanMuppa/brightspace-mcp-server#458](https://github.com/RohanMuppa/brightspace-mcp-server/issues/458)
+  (fixes [#116](https://github.com/RohanMuppa/Brightspace-API/issues/116)).
+
+- `getAnnouncements` without `courseId` hid courses whose announcements could not be read: a 403
+  came back as an empty list for that course, and any other failure (a 5xx, a network error) was
+  swallowed, so the course read as "no announcements". Such a course is still left out of the
+  list, but is now named in a new `unreadCourses` field (`{ courseId, courseName, status?, code
+  }[]`, new type `UnreadAnnouncementsCourse`) with a `notice`, both present only when at least one
+  course was unread. With `modifiedSince` they are fields of `AnnouncementsFiltered`; without it
+  the result is still an `Announcement[]` (now typed `AnnouncementsList`) and they are properties
+  on the array, as `failedCourses` is on `getUpcomingDueDates`, which the `announcements` CLI
+  command writes to stderr. A 403 is named too, as in the upstream fix. A sign-in problem on any
+  course now throws instead of being swallowed. Ported from
+  [RohanMuppa/brightspace-mcp-server#457](https://github.com/RohanMuppa/brightspace-mcp-server/pull/457)
+  (fixes [RohanMuppa/brightspace-mcp-server#456](https://github.com/RohanMuppa/brightspace-mcp-server/issues/456)
+  and [#114](https://github.com/RohanMuppa/Brightspace-API/issues/114)).
 
 - `getCourseContent` reads `/content/userprogress/`; any failure there other than a 403/404 (a 5xx,
   a timeout, a network error) was logged at DEBUG and swallowed, so every topic came back

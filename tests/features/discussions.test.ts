@@ -441,3 +441,80 @@ describe("getDiscussions argument validation", () => {
     );
   });
 });
+
+/**
+ * D2L RichText.Text is plaintext only: no link URLs, and it may be empty while
+ * Html has the content. Descriptions are read from Html as markdown, falling
+ * back to Text, and every view of the same forum or topic agrees (#121).
+ */
+describe("getDiscussions descriptions read from Html (#121)", () => {
+  const linkHtml = '<p>Read the <a href="https://example.edu/guide.pdf">posting guide</a> first.</p>';
+  const htmlOnly = { Text: "", Html: linkHtml };
+
+  it("shows an Html-only forum description with its link URL in the course-wide list and the single-forum view", async () => {
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1, { Description: htmlOnly })];
+      if (path.endsWith("/discussions/forums/1")) return forum(1, { Description: htmlOnly });
+      if (path.endsWith("/forums/1/topics/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const overview = (await getDiscussions(ctx, { courseId: COURSE_ID })) as any;
+    const detail = (await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 })) as any;
+
+    const listed = overview.forums[0].description;
+    expect(listed).toContain("posting guide");
+    expect(listed).toContain("https://example.edu/guide.pdf");
+    expect(detail.forum.description).toBe(listed);
+  });
+
+  it("gives a topic the same description in the course-wide list, the forum detail and the single-topic view", async () => {
+    const t = topic(1, 10, { Description: htmlOnly });
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1)];
+      if (path.endsWith("/discussions/forums/1")) return forum(1);
+      if (path.endsWith("/forums/1/topics/")) return [t];
+      if (path.endsWith("/forums/1/topics/10")) return t;
+      if (path.endsWith("/topics/10/posts/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const overview = (await getDiscussions(ctx, { courseId: COURSE_ID })) as any;
+    const detail = (await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1 })) as any;
+    const single = (await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1, topicId: 10 })) as any;
+
+    const listed = overview.forums[0].topics[0].description;
+    expect(listed).toContain("https://example.edu/guide.pdf");
+    expect(detail.topics[0].description).toBe(listed);
+    expect(single.topic.description).toBe(listed);
+  });
+
+  it("falls back to Text when Html converts to nothing readable", async () => {
+    const blank = { Text: "Plain description", Html: "<p>&nbsp;</p>" };
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1, { Description: blank })];
+      if (path.endsWith("/forums/1/topics/")) return [topic(1, 10, { Description: blank })];
+      if (path.endsWith("/forums/1/topics/10")) return topic(1, 10, { Description: blank });
+      if (path.endsWith("/topics/10/posts/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const overview = (await getDiscussions(ctx, { courseId: COURSE_ID })) as any;
+    const single = (await getDiscussions(ctx, { courseId: COURSE_ID, forumId: 1, topicId: 10 })) as any;
+
+    expect(overview.forums[0].description).toBe("Plain description");
+    expect(overview.forums[0].topics[0].description).toBe("Plain description");
+    expect(single.topic.description).toBe("Plain description");
+  });
+
+  it("keeps description null when the forum has none", async () => {
+    const { ctx } = setup((path) => {
+      if (path.endsWith("/discussions/forums/")) return [forum(1, { Description: null })];
+      if (path.endsWith("/forums/1/topics/")) return [];
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const overview = (await getDiscussions(ctx, { courseId: COURSE_ID })) as any;
+    expect(overview.forums[0].description).toBeNull();
+  });
+});

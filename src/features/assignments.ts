@@ -26,12 +26,25 @@ export interface AssignmentRubricLevel {
 
 export interface AssignmentRubricCriterion {
   name: string;
+  /**
+   * The name of the criteria group this criterion belongs to, when the rubric
+   * comes in D2L's documented `CriteriaGroups` shape and the group is named.
+   * Absent otherwise.
+   */
+  group?: string;
   levels: AssignmentRubricLevel[];
 }
 
 export interface AssignmentRubric {
   name: string;
   criteria: AssignmentRubricCriterion[];
+  /**
+   * Set only when the folder listing named this rubric but sent its criteria
+   * in neither known shape (no `CriteriaGroups` and no `Criteria`). `criteria`
+   * is then `[]` meaning unknown, not a rubric with no criteria. Absent
+   * otherwise.
+   */
+  criteriaUnread?: true;
 }
 
 export interface AssignmentSubmissionFile {
@@ -178,23 +191,119 @@ interface DropboxFolder {
   IsHidden: boolean;
   Assessment: {
     ScoreDenominator: number | null;
-    Rubrics: Array<{
-      RubricId: number;
-      Name: string;
-      Criteria: Array<{
-        CriterionId: number;
-        Name: string;
-        Levels: Array<{
-          LevelId: number;
-          Name: string;
-          Points: number;
-          Description: { Text: string; Html: string } | null;
-        }>;
-      }>;
-    }>;
+    Rubrics: D2LRubric[] | null;
   } | null;
   GroupTypeId?: number | null; // absent/null = individual, a number = group
   SubmissionType: number | null;
+}
+
+// Two rubric shapes are read, as in brightspace-mcp-server's
+// get-assignment-rubric and get-rubrics-for-object tools:
+//  - The documented one (Valence Rubric.Rubric): `CriteriaGroups`, each owning
+//    a shared `Levels` column list, with one `Cells` entry per level on each
+//    criterion (`LevelId`, `Points`, `Description`).
+//  - A flattened one: `Criteria` directly on the rubric, each criterion
+//    listing its own `Levels` with name, points and description.
+// **Why:** only the flattened shape was read, so a tenant sending the
+// documented one got every rubric back with `criteria: []` (#116, ported from
+// brightspace-mcp-server#458).
+interface D2LRichText {
+  Text?: string | null;
+  Html?: string | null;
+}
+
+interface D2LRubricLevel {
+  Id?: number;
+  LevelId?: number;
+  Name: string;
+  Points?: number | null;
+  Description?: D2LRichText | null;
+}
+
+interface D2LRubricCell {
+  LevelId?: number;
+  Points?: number | null;
+  Description?: D2LRichText | null;
+}
+
+interface D2LRubricCriterion {
+  Id?: number;
+  CriterionId?: number;
+  Name: string;
+  Cells?: D2LRubricCell[] | null;
+  Levels?: D2LRubricLevel[] | null;
+}
+
+interface D2LRubricCriteriaGroup {
+  Name?: string | null;
+  Levels?: D2LRubricLevel[] | null;
+  Criteria?: D2LRubricCriterion[] | null;
+}
+
+interface D2LRubric {
+  RubricId: number;
+  Name: string;
+  CriteriaGroups?: D2LRubricCriteriaGroup[] | null;
+  Criteria?: D2LRubricCriterion[] | null;
+}
+
+function rubricText(d: D2LRichText | null | undefined): string | null {
+  if (d?.Text) return d.Text;
+  if (d?.Html) return convertHtmlToMarkdown(d.Html).markdown;
+  return d?.Text ?? null;
+}
+
+function levelIdOf(level: { Id?: number; LevelId?: number }): number | undefined {
+  return level.LevelId ?? level.Id;
+}
+
+/** One criterion's levels, joining Cells to the group's Levels or reading them flat. */
+function rubricLevelsOf(
+  group: D2LRubricCriteriaGroup,
+  criterion: D2LRubricCriterion
+): AssignmentRubricLevel[] {
+  if (criterion.Cells?.length) {
+    const groupLevels = group.Levels ?? [];
+    const byId = new Map(groupLevels.map((l) => [levelIdOf(l), l]));
+    return criterion.Cells.map((cell, i) => {
+      // A cell names its level by LevelId; without one (or with an id the
+      // group does not list), cells follow the group's level columns in order.
+      const level =
+        (cell.LevelId !== undefined ? byId.get(cell.LevelId) : undefined) ?? groupLevels[i];
+      return {
+        name: level?.Name ?? "",
+        // points stays typed `number` for compatibility; D2L sends it on every
+        // points-based rubric, and it was passed through unchecked before.
+        points: (cell.Points ?? level?.Points) as number,
+        description: rubricText(cell.Description),
+      };
+    });
+  }
+  return (criterion.Levels ?? []).map((l) => ({
+    name: l.Name,
+    points: l.Points as number,
+    description: rubricText(l.Description),
+  }));
+}
+
+/** A folder rubric in either shape; `criteriaUnread` when it carries neither. */
+function mapRubric(rubric: D2LRubric): AssignmentRubric {
+  const groups: D2LRubricCriteriaGroup[] | null = rubric.CriteriaGroups?.length
+    ? rubric.CriteriaGroups
+    : rubric.Criteria?.length
+      ? [{ Criteria: rubric.Criteria }]
+      : null;
+  if (!groups) return { name: rubric.Name, criteria: [], criteriaUnread: true };
+  return {
+    name: rubric.Name,
+    criteria: groups.flatMap((group) =>
+      (group.Criteria ?? []).map((c) => ({
+        name: c.Name,
+        ...(group.Name ? { group: group.Name } : {}),
+        levels: rubricLevelsOf(group, c),
+      }))
+    ),
+  };
 }
 
 interface DropboxSubmission {
@@ -539,17 +648,7 @@ async function fetchCourseInventory(
         dueDate: folder.DueDate,
         points: folder.Assessment?.ScoreDenominator ?? null,
         isGroup: folder.GroupTypeId !== null && folder.GroupTypeId !== undefined,
-        rubric: folder.Assessment?.Rubrics?.map((r) => ({
-          name: r.Name,
-          criteria: r.Criteria?.map((c) => ({
-            name: c.Name,
-            levels: c.Levels?.map((l) => ({
-              name: l.Name,
-              points: l.Points,
-              description: l.Description?.Text ?? null,
-            })) ?? [],
-          })) ?? [],
-        })) ?? null,
+        rubric: folder.Assessment?.Rubrics?.map(mapRubric) ?? null,
         submission: submissions.length > 0
           ? {
               submittedDate: submissions[0].SubmissionDate,

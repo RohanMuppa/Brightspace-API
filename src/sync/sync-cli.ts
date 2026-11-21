@@ -13,6 +13,10 @@ import type { FeatureContext } from "../features/context.js";
 import { SyncInputError, syncCourse, type ExistingMode, type SyncResult } from "./course-sync.js";
 import { sensitiveDestination, sensitiveDestinationMessage } from "../utils/sensitive-paths.js";
 import { toPublicError } from "../errors.js";
+import { isAuthUnavailable } from "../api/errors.js";
+import { fetchAllItems } from "../api/paginate.js";
+import { DEFAULT_CACHE_TTLS } from "../api/index.js";
+import { notify, setApprovalNotificationsSuppressed, type NotifyOptions } from "../utils/notify.js";
 import { summarizeSync } from "./summary.js";
 
 export const SYNC_USAGE = `Usage: brightspace sync --course <id> --dest <dir> [options]
@@ -28,6 +32,9 @@ Options:
                        keep_both: save a differing copy as "name (1).ext"
   --module <id>        Only this module and the modules inside it
   --dry-run            List what would be downloaded; download nothing
+  --notify             Show a system notification (macOS) when files were downloaded
+                       or the sign-in has expired; quiet when nothing changed
+                       (turn off everywhere with D2L_NOTIFY=0)
   --json               Print only the result as JSON on stdout (progress on stderr)
   --max-files <n>      Most files to download in one run (default 300)
   --help               Show this help
@@ -43,11 +50,12 @@ export interface ParsedSyncArgs {
   moduleId?: number;
   dryRun: boolean;
   json: boolean;
+  notify: boolean;
   maxFiles?: number;
 }
 
 const FLAGS_WITH_VALUE = new Set(["--course", "--dest", "--existing", "--module", "--max-files"]);
-const FLAGS_ALONE = new Set(["--dry-run", "--json", "--help"]);
+const FLAGS_ALONE = new Set(["--dry-run", "--json", "--notify", "--help"]);
 
 const wholeNumber = (value: string | undefined): number | null =>
   value !== undefined && /^\d+$/.test(value) && Number(value) > 0 && Number.isSafeInteger(Number(value)) ? Number(value) : null;
@@ -99,6 +107,7 @@ export function parseSyncArgs(argv: string[]): ParsedSyncArgs | { help: true } |
     ...(moduleId !== undefined ? { moduleId } : {}),
     dryRun: flags.has("--dry-run"),
     json: flags.has("--json"),
+    notify: flags.has("--notify"),
     ...(maxFiles !== undefined ? { maxFiles } : {}),
   };
 }
@@ -114,6 +123,10 @@ export interface SyncCliDeps {
   /** Aborts the run (Ctrl-C, SIGTERM): it stops cleanly and the exit status is 130. */
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
+  /** Shows a notification for `--notify`; the system one by default. Must not throw. */
+  notify?: (options: NotifyOptions) => Promise<unknown>;
+  /** Resolves after `ms`; bounds the course-name lookup for a notification. Tests inject one that never resolves or at once. */
+  wait?: (ms: number) => Promise<void>;
 }
 
 /** Control characters (ASCII and C1), which have no business in a printed line. */
@@ -127,6 +140,64 @@ export function cleanLine(text: string): string {
 
 const exitCodeFor = (result: SyncResult): number =>
   result.failed.length === 0 && result.notAttempted === 0 && !result.authError ? 0 : 1;
+
+const MAX_LABEL = 60;
+const NAME_LOOKUP_MS = 5000;
+
+/**
+ * A course name is text an instructor controls, so it never leads a notification and is dropped
+ * when it reads like an approval or sign-in prompt ("Approve 47 in Microsoft Authenticator").
+ */
+const LOOKS_LIKE_PROMPT = /approve|authenticator|sign[\s-]*in|log[\s-]*in|password|passcode|verif|\b(mfa|2fa|duo|otp)\b/i;
+
+/** The notification's name for a course: `Course "<name>"`, or `Course <id>` when the name is missing or unsafe. */
+export function courseNotificationLabel(name: unknown, courseId: number): string {
+  const clean = typeof name === "string" ? cleanLine(name).replace(/"/g, "'") : "";
+  if (clean === "" || LOOKS_LIKE_PROMPT.test(clean)) return `Course ${courseId}`;
+  const chars = Array.from(clean);
+  return `Course "${chars.length > MAX_LABEL ? `${chars.slice(0, MAX_LABEL - 1).join("")}…` : clean}"`;
+}
+
+/** Files really downloaded. */
+export function newFileCount(result: SyncResult): number {
+  return result.downloaded.length;
+}
+
+/** True when the run left anything unchecked: "could not read it" is never "nothing new". */
+export function leftUnchecked(result: SyncResult): boolean {
+  return result.failed.length > 0 || result.notAttempted > 0 || result.stopped !== undefined || result.tocTruncated === true;
+}
+
+/** The notification text for a finished run, or null when there is nothing to say. */
+export function syncNotificationMessage(result: SyncResult, label: string): string | null {
+  const count = newFileCount(result);
+  const unchecked = leftUnchecked(result);
+  if (count > 0) return `${label}: ${count} new ${count === 1 ? "file" : "files"}${unchecked ? "; some could not be checked" : ""}`;
+  return unchecked ? `${label}: could not check everything for new files` : null;
+}
+
+interface EnrollmentNameItem {
+  OrgUnit: { Id: number; Name: string };
+}
+
+/** The course's label for a notification. The lookup can stall on a re-sign-in, so it waits at most NAME_LOOKUP_MS, then uses the id. */
+async function courseLabel(ctx: FeatureContext, courseId: number, wait: (ms: number) => Promise<void>): Promise<string> {
+  const fallback = `Course ${courseId}`;
+  const lookup = (async () => {
+    try {
+      const items = await fetchAllItems<EnrollmentNameItem>(
+        ctx.api,
+        ctx.api.lp(`/enrollments/myenrollments/?orgUnitTypeId=3`),
+        { ttl: DEFAULT_CACHE_TTLS.enrollments },
+      );
+      const match = items.find((item) => item.OrgUnit.Id === courseId);
+      return courseNotificationLabel(match?.OrgUnit.Name, courseId);
+    } catch {
+      return fallback;
+    }
+  })();
+  return Promise.race([lookup, wait(NAME_LOOKUP_MS).then(() => fallback)]);
+}
 
 /** Run `sync` and return the process exit code. */
 export async function runSync(argv: string[], io: SyncCliIO, deps: SyncCliDeps): Promise<number> {
@@ -148,6 +219,15 @@ export async function runSync(argv: string[], io: SyncCliIO, deps: SyncCliDeps):
     return code;
   };
 
+  const tell = args.notify ? (deps.notify ?? ((options: NotifyOptions) => notify(options))) : undefined;
+  const signInNeeded = async (): Promise<void> => {
+    await tell?.({ title: "Brightspace", message: "Brightspace sign-in needed" }).catch(() => {});
+  };
+
+  // sync does not wait for a sign-in: it reports "sign-in needed" and stops, so an
+  // "Approve NN" notification for the attempt it abandons would only mislead.
+  const quietApprovals = args.notify;
+  if (quietApprovals) setApprovalNotificationsSuppressed(true);
   try {
     // Checked before anything is created: a refused destination must leave no folder behind.
     const protectedReason = await sensitiveDestination(args.destination);
@@ -178,6 +258,17 @@ export async function runSync(argv: string[], io: SyncCliIO, deps: SyncCliDeps):
     } else {
       io.stdout(`${summarizeSync(result)}\n`);
     }
+    // A run the user cancelled says nothing: they are at the keyboard.
+    if (tell && !args.dryRun && !deps.signal?.aborted && result.stopped !== "cancelled") {
+      if (result.authError) {
+        await signInNeeded();
+      } else if (newFileCount(result) > 0 || leftUnchecked(result)) {
+        const wait = deps.wait ?? ((ms: number) => new Promise<void>((resolve) => void setTimeout(resolve, ms).unref()));
+        const label = await courseLabel(ctx, args.courseId, wait);
+        const message = syncNotificationMessage(result, label);
+        if (message) await tell({ title: "Brightspace", message, ...(newFileCount(result) > 0 ? { openPath: args.destination } : {}) }).catch(() => {});
+      }
+    }
     if (deps.signal?.aborted) {
       io.stderr("Interrupted. Files already saved are kept; run it again to continue.\n");
       return 130;
@@ -185,6 +276,10 @@ export async function runSync(argv: string[], io: SyncCliIO, deps: SyncCliDeps):
     return exitCodeFor(result);
   } catch (error) {
     if (error instanceof SyncInputError) return report(cleanLine(error.message), 2);
+    if (isAuthUnavailable(error)) await signInNeeded();
+    else if (tell && !args.dryRun && !deps.signal?.aborted) await tell({ title: "Brightspace", message: `Course ${args.courseId}: could not check for new files` }).catch(() => {});
     return report(cleanLine(`Could not sync the course: ${toPublicError(error).message}`), 1);
+  } finally {
+    if (quietApprovals) setApprovalNotificationsSuppressed(false);
   }
 }

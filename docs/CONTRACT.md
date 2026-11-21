@@ -58,7 +58,7 @@ Each `src/features/<name>.ts` exports exactly:
 | `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` |
 | `assignment-files.ts` | `getAssignmentFiles(ctx, args)` | `GetAssignmentFilesArgs` | `AssignmentFilesResult` |
 | `download.ts` | `downloadFile(ctx, args)` | `DownloadFileArgs` | `DownloadResult` |
-| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `Announcement[] \| AnnouncementsFiltered` |
+| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `notice`) |
 | `announcement-files.ts` | `getAnnouncementFiles(ctx, args)` | `GetAnnouncementFilesArgs` | `AnnouncementFilesResult` |
 | `content.ts` | `getCourseContent(ctx, args)` | `GetCourseContentArgs` | `CourseContentResult` |
 | `syllabus.ts` | `getSyllabus(ctx, args)` | `GetSyllabusArgs` | `SyllabusResult` |
@@ -142,7 +142,7 @@ export class BrightspaceClient {
   getMyCourses(args?): Promise<Course[]>;
   getUpcomingDueDates(args?): Promise<UpcomingItem[]>;
   getMyGrades(args?): Promise<CourseGrades[]>;
-  getAnnouncements(args?): Promise<Announcement[] | AnnouncementsFiltered>;
+  getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;
   getAssignments(args?): Promise<AssignmentsResult>;
   getAssignmentFiles(args): Promise<AssignmentFilesResult>;

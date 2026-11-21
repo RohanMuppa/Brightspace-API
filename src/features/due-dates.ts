@@ -64,6 +64,8 @@ interface DropboxFolder {
   Name: string;
   DueDate: string | null;
   IsHidden: boolean;
+  /** When the folder opens and stops taking submissions. */
+  Availability?: { StartDate: string | null; EndDate: string | null } | null;
 }
 
 interface QuizReadData {
@@ -266,7 +268,13 @@ async function fetchCourseDueItems(api: D2LApiClient, baseUrl: string, course: C
   if (dropboxResult.status === "fulfilled") {
     for (const folder of unwrapList<DropboxFolder>(dropboxResult.value)) {
       if (folder.IsHidden === true) continue;
-      if (!folder.DueDate) continue;
+      // An instructor who sets only an availability end date still has a
+      // deadline: the folder stops taking submissions then. Quizzes get the
+      // same fallback below. Why: brightspace-mcp-server#460, such an
+      // assignment was missing from the list.
+      const endDate = folder.Availability?.EndDate ?? null;
+      const dueDate = folder.DueDate ?? endDate;
+      if (!dueDate) continue;
 
       items.push({
         type: "assignment",
@@ -274,9 +282,9 @@ async function fetchCourseDueItems(api: D2LApiClient, baseUrl: string, course: C
         title: folder.Name,
         courseId: course.id,
         courseName: course.name,
-        dueDate: folder.DueDate,
+        dueDate,
         startDate: null,
-        endDate: null,
+        endDate,
         url: assignmentUrl(baseUrl, course.id, folder.Id),
       });
     }

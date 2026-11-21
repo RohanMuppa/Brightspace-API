@@ -12,6 +12,9 @@ import type { FeatureContext } from "./context.js";
 import { applyCourseFilter } from "../utils/course-filter.js";
 import { matchesModifiedSince } from "../utils/modified-since.js";
 import { log } from "../utils/logger.js";
+import { richTextToMarkdown } from "../utils/html-converter.js";
+import { isAuthUnavailable } from "../api/errors.js";
+import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 
 export type GetAnnouncementsArgs = z.input<typeof GetAnnouncementsSchema>;
 
@@ -54,11 +57,53 @@ export interface Announcement {
   courseName?: string;
 }
 
+/**
+ * A course left out of the all-courses result because its announcements could
+ * not be read (a 403, a 5xx, a network error, a malformed payload). It is
+ * "unknown", never "no announcements". A sign-in problem throws instead.
+ */
+export interface UnreadAnnouncementsCourse {
+  courseId: number;
+  courseName: string;
+  /** The HTTP status Brightspace answered with, when it answered at all (403 means no access). */
+  status?: number;
+  /** The stable public error code the failure maps to (e.g. `BRIGHTSPACE_FORBIDDEN`, `BRIGHTSPACE_API_ERROR`, `BRIGHTSPACE_NETWORK`). */
+  code: BrightspaceErrorCode;
+}
+
+/**
+ * What `getAnnouncements` returns without `modifiedSince`: the usual
+ * `Announcement[]`, plus `unreadCourses` and `notice` properties that are
+ * present only when, without `courseId`, at least one course's announcements
+ * could not be read. They are properties on the array, not elements, so
+ * iterating, `.length`, and `JSON.stringify` see exactly the announcements.
+ */
+export type AnnouncementsList = Announcement[] & {
+  unreadCourses?: UnreadAnnouncementsCourse[];
+  notice?: string;
+};
+
 export interface AnnouncementsFiltered {
   announcements: Announcement[];
   modifiedSince: string;
   returned: number;
   filteredOut: number;
+  /**
+   * Present only when, without `courseId`, at least one course could not be
+   * read: its announcements are missing from `announcements`, not absent.
+   */
+  unreadCourses?: UnreadAnnouncementsCourse[];
+  /** A sentence naming the unread courses; present only with `unreadCourses`. */
+  notice?: string;
+}
+
+function unreadCoursesNotice(unreadCourses: UnreadAnnouncementsCourse[]): string {
+  return (
+    `Announcements for ${unreadCourses.length} course(s) could not be read from Brightspace ` +
+    `(${unreadCourses.map((c) => `"${c.courseName}" ${c.courseId}${c.status !== undefined ? ` (HTTP ${c.status})` : ""}`).join(", ")}), ` +
+    "so they are missing from this list. Do not read those courses as having no announcements: " +
+    "call getAnnouncements again with that courseId, or check Brightspace."
+  );
 }
 
 /**
@@ -115,7 +160,7 @@ export function mapNewsItem(item: NewsItem): Announcement {
   return {
     id: item.Id,
     title: item.Title,
-    body: item.Body?.Text ?? "",
+    body: richTextToMarkdown(item.Body) ?? "",
     createdBy: item.CreatedBy?.DisplayName ?? "Unknown",
     date: effectiveDate(item),
     isPinned: item.IsPinned,
@@ -128,7 +173,7 @@ export function mapNewsItem(item: NewsItem): Announcement {
 export async function getAnnouncements(
   ctx: FeatureContext,
   args: GetAnnouncementsArgs = {},
-): Promise<Announcement[] | AnnouncementsFiltered> {
+): Promise<AnnouncementsList | AnnouncementsFiltered> {
   const { courseId, count, modifiedSince } = GetAnnouncementsSchema.parse(args);
   const cutoff = modifiedSince ? new Date(modifiedSince) : null;
 
@@ -175,30 +220,46 @@ export async function getAnnouncements(
     ctx.config.courseFilter,
   );
 
+  // Every failure, a 403 included, rejects here and is named in unreadCourses
+  // below; a sign-in problem fails the whole call.
+  // **Why:** a 403 came back as [] and anything else vanished inside
+  // allSettled, so "anything new?" read an unread course as nothing new
+  // (#114, port of brightspace-mcp-server#456).
   const announcementPromises = filteredEnrollments.map(async (item) => {
-    try {
-      const path = ctx.api.le(item.OrgUnit.Id, "/news/");
-      const newsItems = await ctx.api.get<NewsItem[]>(path, { ttl: DEFAULT_CACHE_TTLS.announcements });
+    const path = ctx.api.le(item.OrgUnit.Id, "/news/");
+    const newsItems = await ctx.api.get<NewsItem[]>(path, { ttl: DEFAULT_CACHE_TTLS.announcements });
 
-      return newsItems.filter(isPublishedNewsItem).map((newsItem) => ({
-        ...mapNewsItem(newsItem),
-        courseId: item.OrgUnit.Id,
-        courseName: item.OrgUnit.Name,
-      }));
-    } catch (error: any) {
-      // 403 means no access (past course, etc) - log and skip
-      if (error?.status === 403) {
-        log("DEBUG", `getAnnouncements: 403 Forbidden for course ${item.OrgUnit.Id} (${item.OrgUnit.Name}) - skipping`);
-        return [];
-      }
-      throw error;
-    }
+    return newsItems.filter(isPublishedNewsItem).map((newsItem) => ({
+      ...mapNewsItem(newsItem),
+      courseId: item.OrgUnit.Id,
+      courseName: item.OrgUnit.Name,
+    }));
   });
 
   const results = await Promise.allSettled(announcementPromises);
+  // A course that could not sign in is not a course with no announcements.
+  const authFailure = results.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected" && isAuthUnavailable(r.reason),
+  );
+  if (authFailure) throw authFailure.reason;
+
   const allAnnouncements = results
     .filter((r): r is PromiseFulfilledResult<Array<Announcement & { courseId: number; courseName: string }>> => r.status === "fulfilled")
     .flatMap((r) => r.value);
+
+  const unreadCourses = results.flatMap((r, i): UnreadAnnouncementsCourse[] => {
+    if (r.status !== "rejected") return [];
+    const item = filteredEnrollments[i];
+    log("INFO", `getAnnouncements: could not read course ${item.OrgUnit.Id} (${item.OrgUnit.Name})`, r.reason);
+    const status: unknown = (r.reason as { status?: unknown } | null)?.status;
+    return [{
+      courseId: item.OrgUnit.Id,
+      courseName: item.OrgUnit.Name,
+      ...(typeof status === "number" ? { status } : {}),
+      code: toPublicError(r.reason).code,
+    }];
+  });
+  const unread = unreadCourses.length > 0 ? { unreadCourses, notice: unreadCoursesNotice(unreadCourses) } : null;
 
   const allMatched = cutoff ? allAnnouncements.filter((a) => matchesModifiedSince(a.lastModified, cutoff)) : allAnnouncements;
 
@@ -206,14 +267,17 @@ export async function getAnnouncements(
 
   log(
     "INFO",
-    `getAnnouncements: ${announcements.length} announcements (out of ${allAnnouncements.length} total across ${enrollmentItems.length} courses)`,
+    `getAnnouncements: ${announcements.length} announcements (out of ${allAnnouncements.length} total across ${enrollmentItems.length} courses` +
+      `${unread ? `, ${unreadCourses.length} unread` : ""})`,
   );
-  return modifiedSince
-    ? {
-        announcements,
-        modifiedSince,
-        returned: announcements.length,
-        filteredOut: allAnnouncements.length - allMatched.length,
-      }
-    : announcements;
+  if (modifiedSince) {
+    return {
+      announcements,
+      modifiedSince,
+      returned: announcements.length,
+      filteredOut: allAnnouncements.length - allMatched.length,
+      ...(unread ?? {}),
+    };
+  }
+  return unread ? Object.assign(announcements, unread) : announcements;
 }

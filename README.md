@@ -177,6 +177,8 @@ brightspace due --days 3 | jq -r '.[] | "\(.dueDate)\t\(.title)"'
 
 If some courses' due dates could not be read, `brightspace due` still prints the array on stdout
 and exits 0, and adds one line to stderr: `{"failedCourses":[…]}` naming those courses.
+`brightspace announcements` without `--since` does the same with `{"unreadCourses":[…],"notice":"…"}`
+for courses whose announcements could not be read.
 Likewise, when Brightspace hides some people's email, `brightspace emails` prints the visible ones
 on stdout and adds `{"hiddenCount":N,"notice":"…"}` to stderr.
 
@@ -201,10 +203,10 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
-| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `Announcement[] \| AnnouncementsFiltered` |
+| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`, `progressUnavailable`) |
-| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`) |
+| `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`, `externalSyllabusSources`, `externalSyllabusNote`, `externalSyllabusDiscovery`) |
 | `getDiscussions(args)` | `GetDiscussionsArgs` — `courseId`, `forumId?`, `topicId?` | `DiscussionsResult` |
 | `getRoster(args)` | `GetRosterArgs` — `courseId`, `includeStudents?` (default false), `searchTerm?`, `limit?` (default 100) | `RosterResult` (optional `unavailable`, `notice`) |
 | `getClasslistEmails(args)` | `GetClasslistEmailsArgs` — `courseId` | `ClasslistEmailsResult` (`ClasslistEmailEntry[]` with optional `hiddenCount`, `notice`) |
@@ -242,6 +244,17 @@ code }` — with a `notice` naming those courses, so a course missing from `cour
 not "nothing due". Both are absent when every course was read. A course that answers 403 as a
 whole is still skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in
 problem throws.
+
+`getAnnouncements` without `courseId` reads each course's announcements separately. A course
+whose announcements could not be read (a 403, a 5xx, a network error) is left out of the list but
+named in `unreadCourses` — each `{ courseId, courseName, status?, code }` — with a `notice`
+naming those courses, so a course missing from the list means "unknown", not "no announcements".
+Without `modifiedSince` the result is still an array (`AnnouncementsList`) and both are properties
+on it, like `failedCourses`, which `JSON.stringify` drops; the CLI writes them to stderr as one
+JSON line (`{"unreadCourses":[…],"notice":"…"}`). With `modifiedSince` they are fields of the
+`AnnouncementsFiltered` object. Both are absent when every course was read. Unlike
+`getAssignments`, a 403 is named too, since "anything new?" cannot be answered for that course. A
+sign-in problem throws.
 
 `getRoster` without `includeStudents` reads the instructors and the TAs on separate routes. When
 one of them could not be read (a 404, a 5xx, a network error), the result lists whoever was read
@@ -281,6 +294,16 @@ HTTP statuses) or `BrightspaceNetworkError` saying the attachment could not be r
 was saved, instead of the `BrightspaceNotFoundError` a real 404 still gives. Both fields are absent
 when the attachment was read or is known missing. A sign-in problem throws, as in
 `getAssignments`.
+
+`getSyllabus` also looks for a syllabus tool (e.g. Simple Syllabus) the course links through LTI:
+its LTI 1.1 links, its LTI Advantage (1.3) links, and LTI launches in its content. Matches are
+listed in `externalSyllabusSources` (`{ title, location, url }`, query string or session
+parameters removed); their contents cannot be read. `externalSyllabusDiscovery`
+(`{ complete: false, unavailable, notChecked?, note }`) is set whenever that search is not proof of
+anything: a lookup that was refused or failed is named in `unavailable`, and when nothing was found
+`notChecked: ["course-navbar"]` says the course navbar was never checked, since Brightspace has no
+API for its links. So an empty `externalSyllabusSources` never means "this course has no
+syllabus".
 
 `getDiscussions` with only `courseId` lists every forum with its `topics`; with `forumId` it
 lists that forum's topics with their `posts`. When one forum's topics, or one topic's posts,
