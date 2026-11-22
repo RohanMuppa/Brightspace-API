@@ -17,6 +17,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
   counted (the caller can pass `activeOnly: false`). Port of
   [brightspace-mcp-server#484](https://github.com/RohanMuppa/brightspace-mcp-server/issues/484);
   that repo's `D2L_CURRENT_ONLY` does not exist here.
+- `getMyGrades` (and `brightspace grades`) no longer drops courses hidden by
+  `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; their grades were never read,
+  yet a missing course read as one with no grades. In the all-courses form the result is still a
+  `CourseGrades[]` (now typed `MyGradesResult`, a subtype), and when those settings hid any
+  enrolled course it carries `hiddenCourseIds`, `hiddenBy` and a `notice` that
+  `getMyGrades({ courseId })` still reads them (that form skips the course filter). The CLI keeps
+  stdout a bare array and writes them to stderr as one JSON line. Courses dropped by `activeOnly`
+  are not counted. The "which courses did the settings hide" check is now one shared helper,
+  `coursesHiddenBySettings` in `src/utils/course-filter.ts`, used by `getMyCourses` too. Fixes
+  [#124](https://github.com/RohanMuppa/Brightspace-API/issues/124); port of
+  [brightspace-mcp-server#486](https://github.com/RohanMuppa/brightspace-mcp-server/issues/486).
 
 ### Added
 

@@ -52,7 +52,7 @@ Each `src/features/<name>.ts` exports exactly:
 | Module | Function | Args type (`z.input` of the schema) | Result type |
 |---|---|---|---|
 | `courses.ts` | `getMyCourses(ctx, args?)` | `GetMyCoursesArgs` | `MyCoursesResult` (`Course[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
-| `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `CourseGrades[]` |
+| `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `MyGradesResult` (`CourseGrades[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingItem[]` |
 | `info.ts` | `getInfo(ctx)` | — | `ClientInfo` |
 | `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` |
@@ -141,7 +141,7 @@ export class BrightspaceClient {
   readonly api: D2LApiClient;                 // escape hatch, documented as such
   getMyCourses(args?): Promise<MyCoursesResult>;  // Course[] + optional hiddenCourseIds, hiddenBy, notice
   getUpcomingDueDates(args?): Promise<UpcomingItem[]>;
-  getMyGrades(args?): Promise<CourseGrades[]>;
+  getMyGrades(args?): Promise<MyGradesResult>;   // CourseGrades[] + optional hiddenCourseIds, hiddenBy, notice
   getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;
   getAssignments(args?): Promise<AssignmentsResult>;
