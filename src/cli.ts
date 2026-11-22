@@ -312,8 +312,8 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
 }
 
 /**
- * `getMyCourses` names enrolled courses that D2L_INCLUDE_COURSES or
- * D2L_EXCLUDE_COURSES hid in `hiddenCourseIds`, `hiddenBy` and `notice`
+ * `getMyCourses` and `getMyGrades` name enrolled courses that
+ * D2L_INCLUDE_COURSES or D2L_EXCLUDE_COURSES hid in `hiddenCourseIds`, `hiddenBy` and `notice`
  * properties on the array, which JSON.stringify drops. As with
  * `failedCourses`, stdout stays the bare array and they go to stderr as one
  * JSON line, so a hidden course is never read as one the user is not in.

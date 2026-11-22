@@ -198,3 +198,88 @@ describe("getMyGrades all-courses failed courses", () => {
     await expect(getMyGrades(ctx)).rejects.toBe(error);
   });
 });
+
+/**
+ * A course the include/exclude settings hid was never asked for its grades,
+ * and the caller may never have seen those settings, so it must not read as a
+ * course with no grades (#124, port of brightspace-mcp-server#486).
+ */
+describe("getMyGrades reports courses hidden by course settings", () => {
+  const bothCourses = (active: boolean) => ({
+    Items: [COURSE_A, COURSE_B].map((course) => ({
+      OrgUnit: course,
+      Access: { ClasslistRoleName: "Student", IsActive: active, LastAccessed: null },
+    })),
+    PagingInfo: { HasMoreItems: false, Bookmark: "" },
+  });
+
+  function configWith(filter: Partial<AppConfig["courseFilter"]>, activeOnly = true): AppConfig {
+    const config = makeConfig(activeOnly);
+    config.courseFilter = { ...config.courseFilter, ...filter };
+    return config;
+  }
+
+  const respond = (active = true) => (path: string) => {
+    if (path.includes("/enrollments/")) return bothCourses(active);
+    return [grade("Exam 1")];
+  };
+
+  it("names the course D2L_EXCLUDE_COURSES hid, keeping the array to the read courses", async () => {
+    const { ctx, requested } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getMyGrades(ctx);
+
+    expect(result.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(requested.some((p) => p.includes(`/${COURSE_B.Id}/grades/`))).toBe(false);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(result.notice).toContain("1 enrolled course is hidden");
+    expect(result.notice).toContain(`grades were not read: ${COURSE_B.Id}.`);
+    expect(result.notice).toContain("getMyGrades again with that courseId");
+    expect(JSON.parse(JSON.stringify(result))).toHaveLength(1);
+  });
+
+  it("names D2L_INCLUDE_COURSES when it hides courses", async () => {
+    const { ctx } = setup(respond(), configWith({ includeCourseIds: [COURSE_A.Id] }));
+
+    const result = await getMyGrades(ctx);
+
+    expect(result.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_INCLUDE_COURSES"]);
+  });
+
+  it("does not count courses that activeOnly removed", async () => {
+    // activeOnly:true drops both inactive courses; the exclude list names one
+    // of them, but it hid nothing activeOnly had not already removed.
+    const { ctx } = setup(respond(false), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getMyGrades(ctx);
+
+    expect(result).toEqual([]);
+    expect(result.hiddenCourseIds).toBeUndefined();
+    expect(result.notice).toBeUndefined();
+  });
+
+  it("adds nothing when a setting is on but hides no enrolled course", async () => {
+    const { ctx } = setup(respond(), configWith({ excludeCourseIds: [999] }));
+
+    const result = await getMyGrades(ctx);
+
+    expect(result.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(result.hiddenCourseIds).toBeUndefined();
+    expect(result.hiddenBy).toBeUndefined();
+    expect(result.notice).toBeUndefined();
+  });
+
+  it("still reads a hidden course's grades when given its courseId", async () => {
+    const { ctx } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getMyGrades(ctx, { courseId: COURSE_B.Id });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].courseId).toBe(COURSE_B.Id);
+    expect(result[0].grades).toHaveLength(1);
+    expect(result.hiddenCourseIds).toBeUndefined();
+  });
+});

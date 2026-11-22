@@ -9,7 +9,7 @@ import { DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { fetchAllItems } from "../api/paginate.js";
 import { GetMyCoursesSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
-import { applyCourseFilter } from "../utils/course-filter.js";
+import { applyCourseFilter, coursesHiddenBySettings, type CourseFilterSetting } from "../utils/course-filter.js";
 import { log } from "../utils/logger.js";
 
 export type GetMyCoursesArgs = z.input<typeof GetMyCoursesSchema>;
@@ -34,8 +34,7 @@ interface EnrollmentItem {
   };
 }
 
-/** A course setting that can hide an enrolled course from `getMyCourses`. */
-export type CourseFilterSetting = "D2L_INCLUDE_COURSES" | "D2L_EXCLUDE_COURSES";
+export type { CourseFilterSetting };
 
 /**
  * What `getMyCourses` returns: the usual `Course[]`, plus `hiddenCourseIds`,
@@ -74,7 +73,8 @@ export async function getMyCourses(ctx: FeatureContext, args: GetMyCoursesArgs =
     canAccess: item.Access.CanAccess,
     lastAccessed: item.Access.LastAccessed,
   }));
-  const courses: MyCoursesResult = applyCourseFilter(enrolled, { ...ctx.config.courseFilter, activeOnly });
+  const filter = { ...ctx.config.courseFilter, activeOnly };
+  const courses: MyCoursesResult = applyCourseFilter(enrolled, filter);
 
   log("INFO", `getMyCourses: ${courses.length} courses`);
 
@@ -82,7 +82,7 @@ export async function getMyCourses(ctx: FeatureContext, args: GetMyCoursesArgs =
   // is not enrolled in: the caller may never have seen those settings. Port
   // of brightspace-mcp-server#484. Only when something was hidden, so the
   // usual result is a plain array.
-  const hidden = settingsHidden(enrolled, courses, activeOnly, ctx.config.courseFilter);
+  const hidden = coursesHiddenBySettings(enrolled, courses, filter);
   if (hidden) {
     const are = hidden.ids.length === 1 ? "course is" : "courses are";
     courses.hiddenCourseIds = hidden.ids;
@@ -96,26 +96,3 @@ export async function getMyCourses(ctx: FeatureContext, args: GetMyCoursesArgs =
   return courses;
 }
 
-/**
- * The enrolled courses D2L_INCLUDE_COURSES or D2L_EXCLUDE_COURSES removed, or
- * null when they removed none. Courses dropped by activeOnly alone are not
- * counted: the caller can lift that with activeOnly:false, and with it on the
- * enrollments query never returns them anyway.
- */
-function settingsHidden(
-  enrolled: Course[],
-  shown: Course[],
-  activeOnly: boolean,
-  filter: FeatureContext["config"]["courseFilter"],
-): { ids: number[]; by: CourseFilterSetting[] } | null {
-  const by: CourseFilterSetting[] = [];
-  if (filter.includeCourseIds && filter.includeCourseIds.length > 0) by.push("D2L_INCLUDE_COURSES");
-  if (filter.excludeCourseIds && filter.excludeCourseIds.length > 0) by.push("D2L_EXCLUDE_COURSES");
-  if (by.length === 0) return null;
-
-  const shownIds = new Set(shown.map((course) => course.id));
-  const ids = applyCourseFilter(enrolled, { activeOnly })
-    .map((course) => course.id)
-    .filter((id) => !shownIds.has(id));
-  return ids.length > 0 ? { ids, by } : null;
-}
