@@ -65,6 +65,27 @@ describe("brightspace CLI argv parsing", () => {
     expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [2], hiddenBy: ["D2L_INCLUDE_COURSES"], notice })}\n`]);
   });
 
+  it("assignments keeps stdout the whole result and also writes settings-hidden courses to stderr", async () => {
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_EXCLUDE_COURSES), so their assignments were not read: 2.";
+    const result = { courses: [{ courseId: 1, courseName: "A", assignments: [] }], hiddenCourseIds: [2], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice };
+    const getAssignments = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getAssignments });
+
+    expect(await main(["assignments"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify(result)}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [2], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice })}\n`]);
+  });
+
+  it("assignments writes nothing to stderr when no course was hidden", async () => {
+    const result = { courses: [{ courseId: 1, courseName: "A", assignments: [] }] };
+    const getAssignments = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getAssignments });
+
+    expect(await main(["assignments"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify(result)}\n`);
+    expect(stderr).toEqual([]);
+  });
+
   it("due [--days N] [--course ID] maps to getUpcomingDueDates", async () => {
     const getUpcomingDueDates = vi.fn(async () => []);
     const { deps } = makeDeps({ getUpcomingDueDates });

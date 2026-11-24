@@ -183,7 +183,8 @@ Likewise, when Brightspace hides some people's email, `brightspace emails` print
 on stdout and adds `{"hiddenCount":N,"notice":"…"}` to stderr.
 When `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` hid enrolled courses, `brightspace courses`
 and `brightspace grades` print the shown ones on stdout and add
-`{"hiddenCourseIds":[…],"hiddenBy":[…],"notice":"…"}` to stderr.
+`{"hiddenCourseIds":[…],"hiddenBy":[…],"notice":"…"}` to stderr. `brightspace assignments`
+prints its usual object on stdout (which then carries those fields) and adds the same stderr line.
 
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
@@ -203,7 +204,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `MyCoursesResult` (`Course[]` with optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with an optional `failedCourses`) |
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `MyGradesResult` (`CourseGrades[]` with optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
-| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `notice`) |
+| `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
 | `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
@@ -253,6 +254,12 @@ code }` — with a `notice` naming those courses, so a course missing from `cour
 not "nothing due". Both are absent when every course was read. A course that answers 403 as a
 whole is still skipped quietly, as in `getMyGrades` and `getUpcomingDueDates`, and a sign-in
 problem throws.
+When the include/exclude course lists left out enrolled courses, the all-courses form never read
+their assignments, so the result carries `hiddenCourseIds` and `hiddenBy` as `getMyCourses` does,
+and a sentence about them in `notice`. With unread courses too, `notice` is the unread-courses
+sentence, a space, then the hidden-courses one. `getAssignments({ courseId })` skips the course
+filter, so it does read a hidden course. Courses left out by `activeOnly`, and courses answering
+403, are not counted as hidden. (Fixes #126, port of brightspace-mcp-server#488.)
 
 `getAnnouncements` without `courseId` reads each course's announcements separately. A course
 whose announcements could not be read (a 403, a 5xx, a network error) is left out of the list but

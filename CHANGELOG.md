@@ -28,6 +28,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
   `coursesHiddenBySettings` in `src/utils/course-filter.ts`, used by `getMyCourses` too. Fixes
   [#124](https://github.com/RohanMuppa/Brightspace-API/issues/124); port of
   [brightspace-mcp-server#486](https://github.com/RohanMuppa/brightspace-mcp-server/issues/486).
+- `getAssignments` (and `brightspace assignments`) without a course id no longer drops courses
+  hidden by `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; their assignments
+  were never read, yet a missing course read as one with nothing due. The all-courses result keeps
+  `courses`, `unreadCourses` and every other field, and when those settings hid any enrolled course
+  it adds `hiddenCourseIds`, `hiddenBy` and a sentence in `notice` that
+  `getAssignments({ courseId })` still reads them. When courses were also unread, `notice` is the
+  unread-courses sentence followed by the hidden-courses one. The CLI's stdout is the result object
+  as before and it adds the same stderr JSON line as `brightspace courses`. Courses dropped by
+  `activeOnly`, and courses answering 403, are not counted. Fixes
+  [#126](https://github.com/RohanMuppa/Brightspace-API/issues/126); port of
+  [brightspace-mcp-server#488](https://github.com/RohanMuppa/brightspace-mcp-server/issues/488).
 
 ### Added
 

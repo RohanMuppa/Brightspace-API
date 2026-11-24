@@ -13,7 +13,7 @@ import { GetAssignmentsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
 import { convertHtmlToMarkdown } from "../utils/html-converter.js";
 import { log } from "../utils/logger.js";
-import { applyCourseFilter } from "../utils/course-filter.js";
+import { applyCourseFilter, coursesHiddenBySettings, type CourseFilterSetting } from "../utils/course-filter.js";
 import { assignmentUrl, gradebookUrl, quizUrl } from "../utils/deep-links.js";
 
 export type GetAssignmentsArgs = z.input<typeof GetAssignmentsSchema>;
@@ -177,7 +177,17 @@ export type AssignmentsResult =
        * courses are missing from `courses`, which then is not every course.
        */
       unreadCourses?: UnreadAssignmentsCourse[];
-      /** A sentence naming the unread courses; present only with `unreadCourses`. */
+      /**
+       * Ids of enrolled courses the include/exclude course settings left out,
+       * so their assignments were not read. Present only when they hid one.
+       */
+      hiddenCourseIds?: number[];
+      /** Which of those settings hid them; present only with `hiddenCourseIds`. */
+      hiddenBy?: CourseFilterSetting[];
+      /**
+       * Present with `unreadCourses` or `hiddenCourseIds`: a sentence naming
+       * the unread courses, then one naming the hidden ones, joined by a space.
+       */
       notice?: string;
     };
 
@@ -904,17 +914,15 @@ export async function getAssignments(
     ttl: DEFAULT_CACHE_TTLS.enrollments,
   });
 
-  const filteredEnrollments = applyCourseFilter(
-    enrollmentItems.map((item) => ({
-      id: item.OrgUnit.Id,
-      name: item.OrgUnit.Name,
-      code: item.OrgUnit.Code,
-      isActive: item.Access.IsActive,
-      canAccess: item.Access.CanAccess,
-      ...item,
-    })),
-    ctx.config.courseFilter
-  );
+  const enrolled = enrollmentItems.map((item) => ({
+    id: item.OrgUnit.Id,
+    name: item.OrgUnit.Name,
+    code: item.OrgUnit.Code,
+    isActive: item.Access.IsActive,
+    canAccess: item.Access.CanAccess,
+    ...item,
+  }));
+  const filteredEnrollments = applyCourseFilter(enrolled, ctx.config.courseFilter);
 
   // Fetch assignments for each course (handle 403s gracefully)
   const assignmentPromises = filteredEnrollments.map(async (item) => {
@@ -970,14 +978,34 @@ export async function getAssignments(
     `getAssignments: Retrieved assignments for ${courses.length} courses` +
       `${unreadCourses.length > 0 ? `, ${unreadCourses.length} unread` : ""} (out of ${enrollmentItems.length} enrolled)`
   );
-  if (unreadCourses.length === 0) return { courses };
-  return {
-    courses,
-    unreadCourses,
-    notice:
+  const result: Extract<AssignmentsResult, { courses: CourseAssignments[] }> = { courses };
+  const notices: string[] = [];
+  if (unreadCourses.length > 0) {
+    result.unreadCourses = unreadCourses;
+    notices.push(
       `Assignments for ${unreadCourses.length} course(s) could not be read from Brightspace ` +
-      `(${unreadCourses.map((c) => `"${c.courseName}" ${c.courseId}`).join(", ")}), so they are missing ` +
-      "from this list. Do not read those courses as having nothing due: call getAssignments again with " +
-      "that courseId, or check Brightspace.",
-  };
+        `(${unreadCourses.map((c) => `"${c.courseName}" ${c.courseId}`).join(", ")}), so they are missing ` +
+        "from this list. Do not read those courses as having nothing due: call getAssignments again with " +
+        "that courseId, or check Brightspace."
+    );
+  }
+  // A course the include/exclude settings hid was never asked for its
+  // assignments. The caller may never have seen those settings, so say which
+  // courses they hid rather than let one read as a course with nothing due or
+  // one the user is not in (#126, port of brightspace-mcp-server#488). The
+  // courseId form above skips the filter, so it does read a hidden course.
+  const hidden = coursesHiddenBySettings(enrolled, filteredEnrollments, ctx.config.courseFilter);
+  if (hidden) {
+    const are = hidden.ids.length === 1 ? "course is" : "courses are";
+    result.hiddenCourseIds = hidden.ids;
+    result.hiddenBy = hidden.by;
+    notices.push(
+      `${hidden.ids.length} enrolled ${are} hidden by this client's course settings ` +
+        `(${hidden.by.join(", ")}), so their assignments were not read: ${hidden.ids.join(", ")}. Do not ` +
+        "read those courses as having nothing due or as ones the user is not enrolled in: call " +
+        "getAssignments again with that courseId, which reads a hidden course."
+    );
+  }
+  if (notices.length > 0) result.notice = notices.join(" ");
+  return result;
 }
