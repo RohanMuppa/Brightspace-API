@@ -55,7 +55,7 @@ Each `src/features/<name>.ts` exports exactly:
 | `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `MyGradesResult` (`CourseGrades[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingItem[]` |
 | `info.ts` | `getInfo(ctx)` | — | `ClientInfo` |
-| `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` |
+| `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` (all-courses form + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `assignment-files.ts` | `getAssignmentFiles(ctx, args)` | `GetAssignmentFilesArgs` | `AssignmentFilesResult` |
 | `download.ts` | `downloadFile(ctx, args)` | `DownloadFileArgs` | `DownloadResult` |
 | `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `notice`) |
@@ -144,7 +144,7 @@ export class BrightspaceClient {
   getMyGrades(args?): Promise<MyGradesResult>;   // CourseGrades[] + optional hiddenCourseIds, hiddenBy, notice
   getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;
-  getAssignments(args?): Promise<AssignmentsResult>;
+  getAssignments(args?): Promise<AssignmentsResult>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAssignmentFiles(args): Promise<AssignmentFilesResult>;
   getCourseContent(args): Promise<CourseContentResult>;
   downloadFile(args): Promise<DownloadResult>;

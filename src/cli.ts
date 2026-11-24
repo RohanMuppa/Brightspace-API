@@ -317,13 +317,21 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
  * properties on the array, which JSON.stringify drops. As with
  * `failedCourses`, stdout stays the bare array and they go to stderr as one
  * JSON line, so a hidden course is never read as one the user is not in.
+ * `getAssignments` without `--course` returns an object, so the same fields are
+ * already on stdout; they are written to stderr too, so every command reports
+ * hidden courses on the same stderr line (#126).
  */
 function writeHiddenCourses(deps: CliDeps, result: unknown): void {
-  if (!Array.isArray(result)) return;
+  if (!Array.isArray(result) && !isAllCoursesAssignments(result)) return;
   const { hiddenCourseIds, hiddenBy, notice } = result as { hiddenCourseIds?: number[]; hiddenBy?: string[]; notice?: string };
   if (hiddenCourseIds && hiddenCourseIds.length > 0) {
     deps.stderr.write(`${JSON.stringify({ hiddenCourseIds, hiddenBy, notice })}\n`);
   }
+}
+
+/** The all-courses `getAssignments` result: an object with a `courses` array. */
+function isAllCoursesAssignments(result: unknown): boolean {
+  return typeof result === "object" && result !== null && Array.isArray((result as { courses?: unknown }).courses);
 }
 
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
