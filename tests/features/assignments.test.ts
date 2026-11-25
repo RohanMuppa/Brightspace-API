@@ -787,6 +787,8 @@ describe("getAssignments while sign-in is pending", () => {
     if (!("courses" in result)) throw new Error("expected the all-courses shape");
     expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
     expect(result.courses[1].assignments).toEqual([]);
+    expect(result.courses[1].assignmentsUnavailable).toMatchObject({ code: "BRIGHTSPACE_API_ERROR", status: 500 });
+    expect(result).not.toHaveProperty("unreadCourses");
   });
 });
 
@@ -883,6 +885,146 @@ describe("getAssignments reads that fail", () => {
     const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
 
     expect(result).not.toHaveProperty("quizzesUnavailable");
+  });
+});
+
+/**
+ * A dropbox folder list that fails is not "no assignments", and a course whose
+ * inventory fails as a whole is not a course with nothing due. Ported from
+ * brightspace-mcp-server#447 (issue #111).
+ */
+describe("getAssignments assignment list and unread courses", () => {
+  it("marks a single course's assignment list unavailable when the dropbox list answers 500", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/dropbox/folders/")) throw new ApiError(500, path, "boom");
+      if (path.endsWith("/quizzes/")) return [{ QuizId: 66, Name: "Quiz 1", IsActive: true }];
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
+    if (!("assignments" in result)) throw new Error("expected the single-course shape");
+
+    expect(result.assignments.map((a) => a.type)).toEqual(["quiz"]);
+    expect(result.assignmentsUnavailable).toMatchObject({ code: "BRIGHTSPACE_API_ERROR", status: 500 });
+    expect(result.assignmentsUnavailable?.notice).toContain(String(COURSE_A.Id));
+    expect(result.assignmentsUnavailable?.notice).toContain("no assignments due");
+    expect(result).not.toHaveProperty("quizzesUnavailable");
+  });
+
+  it("marks the assignment list unavailable on a 403, like the quiz list", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/dropbox/folders/")) throw new ApiError(403, path, "forbidden");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
+
+    expect(result).toMatchObject({ assignmentsUnavailable: { code: "BRIGHTSPACE_FORBIDDEN", status: 403 } });
+  });
+
+  it("treats a 404 dropbox list as a course with no Assignments tool, not a failed read", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.endsWith("/dropbox/folders/")) throw new ApiError(404, path, "Not Found");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_A.Id });
+    if (!("assignments" in result)) throw new Error("expected the single-course shape");
+
+    expect(result.assignments).toEqual([]);
+    expect(result).not.toHaveProperty("assignmentsUnavailable");
+  });
+
+  it("carries assignmentsUnavailable on the course's entry in the all-courses result", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      if (path.endsWith(`/${COURSE_B.Id}/dropbox/folders/`)) throw new ApiError(500, path, "boom");
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses[0]).not.toHaveProperty("assignmentsUnavailable");
+    expect(result.courses[1]).toMatchObject({
+      courseId: COURSE_B.Id,
+      assignmentsUnavailable: { code: "BRIGHTSPACE_API_ERROR", status: 500 },
+    });
+  });
+
+  /** Fails every request for COURSE_B's inventory before it is sent, so the course's read throws as a whole. */
+  function failCourseB(error: () => unknown) {
+    const setup = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      return courseWork(path);
+    }, allCoursesConfig(true));
+    const api = setup.ctx.api as unknown as { le: (id: number, p: string) => string };
+    const le = api.le;
+    api.le = (id, p) => {
+      if (id === COURSE_B.Id) throw error();
+      return le(id, p);
+    };
+    return setup;
+  }
+
+  it("names a course that failed with a 500 in unreadCourses and keeps the others", async () => {
+    const { ctx } = failCourseB(() => new ApiError(500, "/course-b", "boom"));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses).toEqual([
+      { courseId: COURSE_B.Id, courseName: COURSE_B.Name, status: 500, code: "BRIGHTSPACE_API_ERROR" },
+    ]);
+    expect(result.notice).toContain(`"${COURSE_B.Name}" ${COURSE_B.Id}`);
+    expect(result.notice).toContain("Do not read those courses as having nothing due");
+  });
+
+  it("names a course whose payload could not be processed, with no status", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      // A malformed folder row throws while the course is being read.
+      if (path.endsWith(`/${COURSE_B.Id}/dropbox/folders/`)) return [null];
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses).toHaveLength(1);
+    expect(result.unreadCourses?.[0]).toMatchObject({ courseId: COURSE_B.Id, courseName: COURSE_B.Name });
+    expect(result.unreadCourses?.[0]).not.toHaveProperty("status");
+  });
+
+  it("still skips a course that answers 403 as a whole, as getMyGrades and getUpcomingDueDates do", async () => {
+    const { ctx } = failCourseB(() => new ApiError(403, "/course-b", "forbidden"));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result).not.toHaveProperty("unreadCourses");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("still throws a sign-in failure instead of listing the course as unread", async () => {
+    const { ctx } = failCourseB(() => mfaPending());
+
+    await expect(getAssignments(ctx)).rejects.toBeInstanceOf(AuthProcessError);
+  });
+
+  it("leaves unreadCourses and notice out when every course was read", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      return courseWork(path);
+    }, allCoursesConfig(true));
+
+    const result = await getAssignments(ctx);
+
+    expect(result).not.toHaveProperty("unreadCourses");
+    expect(result).not.toHaveProperty("notice");
   });
 });
 
@@ -1005,5 +1147,131 @@ describe("fetchCourseAssignments rubrics (#116, brightspace-mcp-server#458)", ()
     const rubric = await rubricsOf([{ RubricId: 3, Name: "Presentation" }]);
 
     expect(rubric).toEqual([{ name: "Presentation", criteria: [], criteriaUnread: true }]);
+  });
+});
+
+/**
+ * A course the include/exclude settings hid was never asked for its
+ * assignments, and the caller may never have seen those settings, so it must
+ * not read as a course with nothing due (#126, port of
+ * brightspace-mcp-server#488).
+ */
+describe("getAssignments reports courses hidden by course settings", () => {
+  function configWith(filter: Partial<AppConfig["courseFilter"]>, activeOnly = true): AppConfig {
+    const config = allCoursesConfig(activeOnly);
+    config.courseFilter = { ...config.courseFilter, ...filter };
+    return config;
+  }
+
+  const respond = (active = true) => (path: string) => {
+    if (path.includes("/enrollments/")) {
+      return { Items: [enrollmentItem(COURSE_A, active), enrollmentItem(COURSE_B, active)] };
+    }
+    return courseWork(path);
+  };
+
+  it("names the course D2L_EXCLUDE_COURSES hid, keeping courses to the read ones", async () => {
+    const { ctx, requested } = setupContext(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(requested.some((p) => p.includes(`/${COURSE_B.Id}/`))).toBe(false);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(result.notice).toContain("1 enrolled course is hidden");
+    expect(result.notice).toContain(`assignments were not read: ${COURSE_B.Id}.`);
+    expect(result.notice).toContain("getAssignments again with that courseId");
+    expect(result).not.toHaveProperty("unreadCourses");
+  });
+
+  it("names D2L_INCLUDE_COURSES when it hides courses", async () => {
+    const { ctx } = setupContext(respond(), configWith({ includeCourseIds: [COURSE_A.Id] }));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_INCLUDE_COURSES"]);
+  });
+
+  it("does not count courses that activeOnly removed", async () => {
+    // activeOnly:true drops both inactive courses; the exclude list names one
+    // of them, but it hid nothing activeOnly had not already removed.
+    const { ctx } = setupContext(respond(false), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getAssignments(ctx);
+
+    expect(result).toEqual({ courses: [] });
+  });
+
+  it("adds nothing when a setting is on but hides no enrolled course", async () => {
+    const { ctx } = setupContext(respond(), configWith({ excludeCourseIds: [999] }));
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
+    expect(result).not.toHaveProperty("hiddenBy");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("does not count a course that answered 403 as hidden", async () => {
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B)] };
+      return courseWork(path);
+    }, configWith({ excludeCourseIds: [999] }));
+    const api = ctx.api as unknown as { le: (id: number, p: string) => string };
+    const le = api.le;
+    api.le = (id, p) => {
+      if (id === COURSE_B.Id) throw new ApiError(403, "/course-b", "forbidden");
+      return le(id, p);
+    };
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("joins the unread-course and hidden-course notices", async () => {
+    const extra = { Id: 303, Name: "PHYS 172", Code: "phys172" };
+    const { ctx } = setupContext((path) => {
+      if (path.includes("/enrollments/")) {
+        return { Items: [enrollmentItem(COURSE_A), enrollmentItem(COURSE_B), enrollmentItem(extra)] };
+      }
+      return courseWork(path);
+    }, configWith({ excludeCourseIds: [extra.Id] }));
+    const api = ctx.api as unknown as { le: (id: number, p: string) => string };
+    const le = api.le;
+    api.le = (id, p) => {
+      if (id === COURSE_B.Id) throw new ApiError(500, "/course-b", "boom");
+      return le(id, p);
+    };
+
+    const result = await getAssignments(ctx);
+    if (!("courses" in result)) throw new Error("expected the all-courses shape");
+
+    expect(result.courses.map((c) => c.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses?.map((c) => c.courseId)).toEqual([COURSE_B.Id]);
+    expect(result.hiddenCourseIds).toEqual([extra.Id]);
+    expect(result.notice).toMatch(/^Assignments for 1 course\(s\) could not be read/);
+    expect(result.notice).toContain(`or check Brightspace. 1 enrolled course is hidden`);
+  });
+
+  it("still reads a hidden course's assignments when given its courseId", async () => {
+    const { ctx } = setupContext(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = await getAssignments(ctx, { courseId: COURSE_B.Id });
+    if (!("assignments" in result)) throw new Error("expected the single-course shape");
+
+    expect(result.courseId).toBe(COURSE_B.Id);
+    expect(result.assignments.map((a) => a.name)).toEqual([`HW ${COURSE_B.Id}`]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
   });
 });

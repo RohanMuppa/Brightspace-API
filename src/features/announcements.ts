@@ -9,7 +9,7 @@ import { DEFAULT_CACHE_TTLS } from "../api/index.js";
 import { fetchAllItems } from "../api/paginate.js";
 import { GetAnnouncementsSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
-import { applyCourseFilter } from "../utils/course-filter.js";
+import { applyCourseFilter, coursesHiddenBySettings, type CourseFilterSetting } from "../utils/course-filter.js";
 import { matchesModifiedSince } from "../utils/modified-since.js";
 import { log } from "../utils/logger.js";
 import { richTextToMarkdown } from "../utils/html-converter.js";
@@ -73,13 +73,25 @@ export interface UnreadAnnouncementsCourse {
 
 /**
  * What `getAnnouncements` returns without `modifiedSince`: the usual
- * `Announcement[]`, plus `unreadCourses` and `notice` properties that are
- * present only when, without `courseId`, at least one course's announcements
- * could not be read. They are properties on the array, not elements, so
+ * `Announcement[]`, plus `unreadCourses`, `hiddenCourseIds`, `hiddenBy` and
+ * `notice` properties that are present only when, without `courseId`, at
+ * least one course's announcements could not be read or the course settings
+ * hid an enrolled course. They are properties on the array, not elements, so
  * iterating, `.length`, and `JSON.stringify` see exactly the announcements.
  */
 export type AnnouncementsList = Announcement[] & {
   unreadCourses?: UnreadAnnouncementsCourse[];
+  /**
+   * Ids of enrolled courses the include/exclude course settings left out,
+   * so their announcements were not read. Present only when they hid one.
+   */
+  hiddenCourseIds?: number[];
+  /** Which of those settings hid them; present only with `hiddenCourseIds`. */
+  hiddenBy?: CourseFilterSetting[];
+  /**
+   * Present with `unreadCourses` or `hiddenCourseIds`: a sentence naming
+   * the unread courses, then one naming the hidden ones, joined by a space.
+   */
   notice?: string;
 };
 
@@ -93,7 +105,17 @@ export interface AnnouncementsFiltered {
    * read: its announcements are missing from `announcements`, not absent.
    */
   unreadCourses?: UnreadAnnouncementsCourse[];
-  /** A sentence naming the unread courses; present only with `unreadCourses`. */
+  /**
+   * Ids of enrolled courses the include/exclude course settings left out,
+   * so their announcements were not read. Present only when they hid one.
+   */
+  hiddenCourseIds?: number[];
+  /** Which of those settings hid them; present only with `hiddenCourseIds`. */
+  hiddenBy?: CourseFilterSetting[];
+  /**
+   * Present with `unreadCourses` or `hiddenCourseIds`: a sentence naming
+   * the unread courses, then one naming the hidden ones, joined by a space.
+   */
   notice?: string;
 }
 
@@ -208,17 +230,15 @@ export async function getAnnouncements(
     ttl: DEFAULT_CACHE_TTLS.enrollments,
   });
 
-  const filteredEnrollments = applyCourseFilter(
-    enrollmentItems.map((item) => ({
-      id: item.OrgUnit.Id,
-      name: item.OrgUnit.Name,
-      code: item.OrgUnit.Code,
-      isActive: item.Access.IsActive,
-      canAccess: item.Access.CanAccess,
-      ...item,
-    })),
-    ctx.config.courseFilter,
-  );
+  const enrolled = enrollmentItems.map((item) => ({
+    id: item.OrgUnit.Id,
+    name: item.OrgUnit.Name,
+    code: item.OrgUnit.Code,
+    isActive: item.Access.IsActive,
+    canAccess: item.Access.CanAccess,
+    ...item,
+  }));
+  const filteredEnrollments = applyCourseFilter(enrolled, ctx.config.courseFilter);
 
   // Every failure, a 403 included, rejects here and is named in unreadCourses
   // below; a sign-in problem fails the whole call.
@@ -259,7 +279,30 @@ export async function getAnnouncements(
       code: toPublicError(r.reason).code,
     }];
   });
-  const unread = unreadCourses.length > 0 ? { unreadCourses, notice: unreadCoursesNotice(unreadCourses) } : null;
+  const extra: Pick<AnnouncementsFiltered, "unreadCourses" | "hiddenCourseIds" | "hiddenBy" | "notice"> = {};
+  const notices: string[] = [];
+  if (unreadCourses.length > 0) {
+    extra.unreadCourses = unreadCourses;
+    notices.push(unreadCoursesNotice(unreadCourses));
+  }
+  // A course the include/exclude settings hid was never asked for its news.
+  // The caller may never have seen those settings, so say which courses they
+  // hid rather than let one read as a course with nothing new or one the user
+  // is not in (#129, port of brightspace-mcp-server#490). The courseId form
+  // above skips the filter, so it does read a hidden course.
+  const hidden = coursesHiddenBySettings(enrolled, filteredEnrollments, ctx.config.courseFilter);
+  if (hidden) {
+    const are = hidden.ids.length === 1 ? "course is" : "courses are";
+    extra.hiddenCourseIds = hidden.ids;
+    extra.hiddenBy = hidden.by;
+    notices.push(
+      `${hidden.ids.length} enrolled ${are} hidden by this client's course settings ` +
+        `(${hidden.by.join(", ")}), so their announcements were not read: ${hidden.ids.join(", ")}. Do not ` +
+        "read those courses as having no announcements or as ones the user is not enrolled in: call " +
+        "getAnnouncements again with that courseId, which reads a hidden course.",
+    );
+  }
+  if (notices.length > 0) extra.notice = notices.join(" ");
 
   const allMatched = cutoff ? allAnnouncements.filter((a) => matchesModifiedSince(a.lastModified, cutoff)) : allAnnouncements;
 
@@ -268,7 +311,8 @@ export async function getAnnouncements(
   log(
     "INFO",
     `getAnnouncements: ${announcements.length} announcements (out of ${allAnnouncements.length} total across ${enrollmentItems.length} courses` +
-      `${unread ? `, ${unreadCourses.length} unread` : ""})`,
+      `${unreadCourses.length > 0 ? `, ${unreadCourses.length} unread` : ""}` +
+      `${hidden ? `, ${hidden.ids.length} hidden by settings` : ""})`,
   );
   if (modifiedSince) {
     return {
@@ -276,8 +320,8 @@ export async function getAnnouncements(
       modifiedSince,
       returned: announcements.length,
       filteredOut: allAnnouncements.length - allMatched.length,
-      ...(unread ?? {}),
+      ...extra,
     };
   }
-  return unread ? Object.assign(announcements, unread) : announcements;
+  return notices.length > 0 ? Object.assign(announcements, extra) : announcements;
 }

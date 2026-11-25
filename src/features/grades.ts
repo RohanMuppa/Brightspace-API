@@ -11,7 +11,7 @@ import { fetchAllItems } from "../api/paginate.js";
 import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 import { GetMyGradesSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
-import { applyCourseFilter } from "../utils/course-filter.js";
+import { applyCourseFilter, coursesHiddenBySettings, type CourseFilterSetting } from "../utils/course-filter.js";
 import { log } from "../utils/logger.js";
 import { gradebookUrl } from "../utils/deep-links.js";
 
@@ -54,6 +54,23 @@ export interface CourseGrades {
    */
   failed?: CourseGradesFailure;
 }
+
+/**
+ * What `getMyGrades` returns: the usual `CourseGrades[]`, plus
+ * `hiddenCourseIds`, `hiddenBy` and `notice` properties that are present only
+ * when, in the all-courses form, the configured include/exclude course lists
+ * hid at least one enrolled course, so its grades were not read. They are
+ * properties on the array, not elements, so iterating, `.length`, and
+ * `JSON.stringify` see exactly the courses.
+ */
+export type MyGradesResult = CourseGrades[] & {
+  /** Ids of enrolled courses the include/exclude course settings left out. */
+  hiddenCourseIds?: number[];
+  /** Which of those settings hid them. */
+  hiddenBy?: CourseFilterSetting[];
+  /** Set with `hiddenCourseIds`: how many were hidden, by what, and that `courseId` still reads them. */
+  notice?: string;
+};
 
 interface GradeValue {
   GradeObjectIdentifier: string;
@@ -118,7 +135,7 @@ function failedCourse(baseUrl: string, courseId: number, courseName: string, err
 }
 
 /** The caller's grade breakdown for a specific course, or every enrolled course. */
-export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {}): Promise<CourseGrades[]> {
+export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {}): Promise<MyGradesResult> {
   const { courseId } = GetMyGradesSchema.parse(args);
 
   if (courseId) {
@@ -140,17 +157,15 @@ export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {
     ttl: DEFAULT_CACHE_TTLS.enrollments,
   });
 
-  const filteredEnrollments = applyCourseFilter(
-    enrollmentItems.map((item) => ({
-      id: item.OrgUnit.Id,
-      name: item.OrgUnit.Name,
-      code: item.OrgUnit.Code,
-      isActive: item.Access.IsActive,
-      canAccess: item.Access.CanAccess,
-      ...item,
-    })),
-    ctx.config.courseFilter,
-  );
+  const enrolled = enrollmentItems.map((item) => ({
+    id: item.OrgUnit.Id,
+    name: item.OrgUnit.Name,
+    code: item.OrgUnit.Code,
+    isActive: item.Access.IsActive,
+    canAccess: item.Access.CanAccess,
+    ...item,
+  }));
+  const filteredEnrollments = applyCourseFilter(enrolled, ctx.config.courseFilter);
 
   const gradePromises = filteredEnrollments.map(async (item): Promise<CourseGrades | null> => {
     try {
@@ -178,7 +193,7 @@ export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {
     (r): r is PromiseRejectedResult => r.status === "rejected" && isAuthUnavailable(r.reason),
   );
   if (authFailure) throw authFailure.reason;
-  const courses = results.flatMap((r, i) => {
+  const courses: MyGradesResult = results.flatMap((r, i) => {
     if (r.status === "fulfilled") return r.value === null ? [] : [r.value];
     // Defensive: the per-course catch above only rethrows auth failures.
     const item = filteredEnrollments[i];
@@ -191,5 +206,22 @@ export async function getMyGrades(ctx: FeatureContext, args: GetMyGradesArgs = {
     `getMyGrades: Retrieved grades for ${courses.length - failedCount} courses` +
       `${failedCount > 0 ? `, ${failedCount} failed` : ""} (out of ${enrollmentItems.length} enrolled)`,
   );
+
+  // A course the include/exclude settings hid was never asked for its grades.
+  // The caller may never have seen those settings, so say which courses they
+  // hid rather than let one read as a course with no grades or one the user
+  // is not in (#124, port of brightspace-mcp-server#486). The courseId form
+  // above skips the filter, so it does read a hidden course.
+  const hidden = coursesHiddenBySettings(enrolled, filteredEnrollments, ctx.config.courseFilter);
+  if (hidden) {
+    const are = hidden.ids.length === 1 ? "course is" : "courses are";
+    courses.hiddenCourseIds = hidden.ids;
+    courses.hiddenBy = hidden.by;
+    courses.notice =
+      `${hidden.ids.length} enrolled ${are} hidden by this client's course settings ` +
+      `(${hidden.by.join(", ")}), so their grades were not read: ${hidden.ids.join(", ")}. A course ` +
+      "missing from this list is not one with no grades or one the user is not enrolled in. Call " +
+      "getMyGrades again with that courseId, which reads a hidden course.";
+  }
   return courses;
 }

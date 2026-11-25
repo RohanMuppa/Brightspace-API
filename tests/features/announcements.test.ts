@@ -598,3 +598,127 @@ describe("getAnnouncements body read from Html (#121)", () => {
     expect(items[0].body).toBe("");
   });
 });
+
+/**
+ * A course the include/exclude settings hid was never asked for its news, and
+ * the caller may never have seen those settings, so it must not read as a
+ * course with no announcements (#129, port of brightspace-mcp-server#490).
+ */
+describe("getAnnouncements reports courses hidden by course settings (#129)", () => {
+  const posted = news({ Id: 1, Title: "A post", CreatedDate: "2026-09-01T00:00:00.000Z", StartDate: "2026-09-01T00:00:00.000Z" });
+  const SINCE = "2026-01-01T00:00:00Z";
+
+  function configWith(filter: Partial<AppConfig["courseFilter"]>, activeOnly = true): AppConfig {
+    const config = makeConfig(activeOnly);
+    config.courseFilter = { ...config.courseFilter, ...filter };
+    return config;
+  }
+
+  const respond = (active = true): Responder => (path) => {
+    if (path.includes("/enrollments/")) {
+      return { Items: [enrollmentItem(COURSE_A, active), enrollmentItem(COURSE_B, active)] };
+    }
+    return [posted];
+  };
+
+  it("names the course D2L_EXCLUDE_COURSES hid on the bare array, which keeps its shape", async () => {
+    const { ctx, requested } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(JSON.parse(JSON.stringify(result))).toHaveLength(1);
+    expect(requested.some((p) => p.includes(`/${COURSE_B.Id}/`))).toBe(false);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(result.notice).toContain("1 enrolled course is hidden");
+    expect(result.notice).toContain(`announcements were not read: ${COURSE_B.Id}.`);
+    expect(result.notice).toContain("getAnnouncements again with that courseId");
+    expect(result).not.toHaveProperty("unreadCourses");
+  });
+
+  it("names the hidden course on the modifiedSince object", async () => {
+    const { ctx } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = (await getAnnouncements(ctx, { modifiedSince: SINCE })) as any;
+    expect(result.announcements.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.returned).toBe(1);
+    expect(result.modifiedSince).toBe(SINCE);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(result.notice).toContain("1 enrolled course is hidden");
+    expect(result).not.toHaveProperty("unreadCourses");
+  });
+
+  it("names D2L_INCLUDE_COURSES when it hides courses", async () => {
+    const { ctx } = setup(respond(), configWith({ includeCourseIds: [COURSE_A.Id] }));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(result.hiddenBy).toEqual(["D2L_INCLUDE_COURSES"]);
+  });
+
+  it("does not count courses that activeOnly removed", async () => {
+    // activeOnly:true drops both inactive courses; the exclude list names one
+    // of them, but it hid nothing activeOnly had not already removed.
+    const { ctx } = setup(respond(false), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result).toEqual([]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
+    expect(result).not.toHaveProperty("notice");
+  });
+
+  it("adds nothing when a setting is on but hides no enrolled course", async () => {
+    const { ctx } = setup(respond(), configWith({ excludeCourseIds: [999] }));
+
+    const list = (await getAnnouncements(ctx)) as any;
+    expect(list.map((a: any) => a.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(list).not.toHaveProperty("hiddenCourseIds");
+    expect(list).not.toHaveProperty("hiddenBy");
+    expect(list).not.toHaveProperty("notice");
+
+    const filtered = (await getAnnouncements(ctx, { modifiedSince: SINCE })) as any;
+    expect(filtered).not.toHaveProperty("hiddenCourseIds");
+    expect(filtered).not.toHaveProperty("notice");
+  });
+
+  it("does not count a course that answered 403 as hidden; it is unread instead", async () => {
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B);
+      if (path.includes(`/${COURSE_B.Id}/news/`)) throw new ApiError(403, "/news/", "forbidden");
+      return [posted];
+    }, configWith({ excludeCourseIds: [999] }));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses.map((c: any) => c.courseId)).toEqual([COURSE_B.Id]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
+    expect(result.notice).not.toContain("hidden by this client's course settings");
+  });
+
+  it("joins the unread-course and hidden-course notices", async () => {
+    const extra = { Id: 303, Name: "PHYS 172", Code: "phys172" };
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B, extra);
+      if (path.includes(`/${COURSE_B.Id}/news/`)) throw new ApiError(500, "/news/", "boom");
+      return [posted];
+    }, configWith({ excludeCourseIds: [extra.Id] }));
+
+    const result = (await getAnnouncements(ctx)) as any;
+    expect(result.map((a: any) => a.courseId)).toEqual([COURSE_A.Id]);
+    expect(result.unreadCourses.map((c: any) => c.courseId)).toEqual([COURSE_B.Id]);
+    expect(result.hiddenCourseIds).toEqual([extra.Id]);
+    expect(result.notice).toMatch(/^Announcements for 1 course\(s\) could not be read/);
+    expect(result.notice).toContain("or check Brightspace. 1 enrolled course is hidden");
+  });
+
+  it("still reads a hidden course's announcements when given its courseId", async () => {
+    const { ctx } = setup(oneCourse([posted]), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const result = (await getAnnouncements(ctx, { courseId: COURSE_B.Id })) as any;
+    expect(result.map((a: any) => a.title)).toEqual(["A post"]);
+    expect(result).not.toHaveProperty("hiddenCourseIds");
+  });
+});
