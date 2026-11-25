@@ -185,6 +185,8 @@ When `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` hid enrolled courses, `brigh
 and `brightspace grades` print the shown ones on stdout and add
 `{"hiddenCourseIds":[…],"hiddenBy":[…],"notice":"…"}` to stderr. `brightspace assignments`
 prints its usual object on stdout (which then carries those fields) and adds the same stderr line.
+`brightspace announcements` does the same: the shown announcements on stdout (with `--since`, its
+usual object, which then carries those fields) and the same stderr line.
 
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
@@ -207,7 +209,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
 | `downloadFile(args)` | `DownloadFileArgs` — `courseId`, `topicId?` \| `coursePath?` \| `folderId?`/`fileId?` \| `newsId?`/`fileId?`, `downloadPath`, `customFilename?` | `DownloadResult` |
-| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `notice`) |
+| `getAnnouncements(args?)` | `GetAnnouncementsArgs` — `courseId?: number`, `count?` (default 10), `modifiedSince?: string` | `AnnouncementsList \| AnnouncementsFiltered` (optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getAnnouncementFiles(args)` | `GetAnnouncementFilesArgs` — `courseId`, `newsId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AnnouncementFilesResult` |
 | `getCourseContent(args)` | `GetCourseContentArgs` — `courseId`, `typeFilter?` (default `"all"`), `moduleTitle?`, `maxDepth?`, `modifiedSince?` | `CourseContentResult` (optional `notice`, `progressUnavailable`) |
 | `getSyllabus(args)` | `GetSyllabusArgs` — `courseId`, `downloadPath?` | `SyllabusResult` (optional `attachmentUnreadable`, `notice`, `externalSyllabusSources`, `externalSyllabusNote`, `externalSyllabusDiscovery`) |
@@ -271,6 +273,13 @@ JSON line (`{"unreadCourses":[…],"notice":"…"}`). With `modifiedSince` they 
 `AnnouncementsFiltered` object. Both are absent when every course was read. Unlike
 `getAssignments`, a 403 is named too, since "anything new?" cannot be answered for that course. A
 sign-in problem throws.
+When the include/exclude course lists left out enrolled courses, the all-courses form never read
+their announcements, so both shapes carry `hiddenCourseIds` and `hiddenBy` as `getMyCourses` does
+(on the array, or as fields of the `modifiedSince` object), and a sentence about them in `notice`.
+With unread courses too, `notice` is the unread-courses sentence, a space, then the hidden-courses
+one. `getAnnouncements({ courseId })` skips the course filter, so it does read a hidden course.
+Courses left out by `activeOnly` are not counted as hidden. (Fixes #129, port of
+brightspace-mcp-server#490.)
 
 `getRoster` without `includeStudents` reads the instructors and the TAs on separate routes. When
 one of them could not be read (a 404, a 5xx, a network error), the result lists whoever was read

@@ -216,6 +216,37 @@ describe("brightspace CLI argv parsing", () => {
     expect(stderr).toEqual([`${JSON.stringify({ unreadCourses, notice })}\n`]);
   });
 
+  it("announcements keeps stdout a bare array and writes settings-hidden courses to stderr", async () => {
+    const item = { id: 1, title: "Hi", courseId: 7 };
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_EXCLUDE_COURSES), so their announcements were not read: 8.";
+    const result = Object.assign([item], { hiddenCourseIds: [8], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice });
+    const getAnnouncements = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getAnnouncements });
+
+    expect(await main(["announcements"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([item])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [8], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice })}\n`]);
+  });
+
+  it("announcements --since keeps stdout the whole result and also writes settings-hidden courses to stderr", async () => {
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_INCLUDE_COURSES), so their announcements were not read: 8.";
+    const result = {
+      announcements: [{ id: 1, title: "Hi", courseId: 7 }],
+      modifiedSince: "2026-01-01T00:00:00Z",
+      returned: 1,
+      filteredOut: 0,
+      hiddenCourseIds: [8],
+      hiddenBy: ["D2L_INCLUDE_COURSES"],
+      notice,
+    };
+    const getAnnouncements = vi.fn(async () => result as never);
+    const { deps, stdout, stderr } = makeDeps({ getAnnouncements });
+
+    expect(await main(["announcements", "--since", "2026-01-01T00:00:00Z"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify(result)}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [8], hiddenBy: ["D2L_INCLUDE_COURSES"], notice })}\n`]);
+  });
+
   it("emails writes nothing to stderr when every email is visible", async () => {
     const getClasslistEmails = vi.fn(async () => [] as never);
     const { deps, stderr } = makeDeps({ getClasslistEmails });

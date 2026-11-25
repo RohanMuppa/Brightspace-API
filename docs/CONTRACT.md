@@ -58,7 +58,7 @@ Each `src/features/<name>.ts` exports exactly:
 | `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` (all-courses form + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `assignment-files.ts` | `getAssignmentFiles(ctx, args)` | `GetAssignmentFilesArgs` | `AssignmentFilesResult` |
 | `download.ts` | `downloadFile(ctx, args)` | `DownloadFileArgs` | `DownloadResult` |
-| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `notice`) |
+| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `announcement-files.ts` | `getAnnouncementFiles(ctx, args)` | `GetAnnouncementFilesArgs` | `AnnouncementFilesResult` |
 | `content.ts` | `getCourseContent(ctx, args)` | `GetCourseContentArgs` | `CourseContentResult` |
 | `syllabus.ts` | `getSyllabus(ctx, args)` | `GetSyllabusArgs` | `SyllabusResult` |
@@ -142,7 +142,7 @@ export class BrightspaceClient {
   getMyCourses(args?): Promise<MyCoursesResult>;  // Course[] + optional hiddenCourseIds, hiddenBy, notice
   getUpcomingDueDates(args?): Promise<UpcomingItem[]>;
   getMyGrades(args?): Promise<MyGradesResult>;   // CourseGrades[] + optional hiddenCourseIds, hiddenBy, notice
-  getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;
+  getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;
   getAssignments(args?): Promise<AssignmentsResult>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAssignmentFiles(args): Promise<AssignmentFilesResult>;

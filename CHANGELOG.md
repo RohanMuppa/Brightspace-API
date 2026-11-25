@@ -39,6 +39,19 @@ All notable changes to `brightspace-api` are documented here. Format follows
   `activeOnly`, and courses answering 403, are not counted. Fixes
   [#126](https://github.com/RohanMuppa/Brightspace-API/issues/126); port of
   [brightspace-mcp-server#488](https://github.com/RohanMuppa/brightspace-mcp-server/issues/488).
+- `getAnnouncements` (and `brightspace announcements`) without a course id no longer drops courses
+  hidden by `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; their announcements
+  were never read, yet a missing course read as one with nothing new. Both result shapes keep every
+  field: without `modifiedSince` the result is still an `Announcement[]` (`AnnouncementsList`) and
+  with it the `AnnouncementsFiltered` object, and when those settings hid any enrolled course
+  either one adds `hiddenCourseIds`, `hiddenBy` and a sentence in `notice` that
+  `getAnnouncements({ courseId })` still reads them (properties on the array, like
+  `unreadCourses`). When courses were also unread, `notice` is the unread-courses sentence followed
+  by the hidden-courses one. The CLI's stdout is unchanged and it adds the same stderr JSON line as
+  `brightspace courses`, with or without `--since`. Courses dropped by `activeOnly`, and courses
+  answering 403 (those stay in `unreadCourses`), are not counted. Fixes
+  [#129](https://github.com/RohanMuppa/Brightspace-API/issues/129); port of
+  [brightspace-mcp-server#490](https://github.com/RohanMuppa/brightspace-mcp-server/issues/490).
 
 ### Added
 

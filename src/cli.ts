@@ -319,10 +319,12 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
  * JSON line, so a hidden course is never read as one the user is not in.
  * `getAssignments` without `--course` returns an object, so the same fields are
  * already on stdout; they are written to stderr too, so every command reports
- * hidden courses on the same stderr line (#126).
+ * hidden courses on the same stderr line (#126). `getAnnouncements` puts them on
+ * the array without `--since` and in the stdout object with it; both forms get
+ * the stderr line too (#129).
  */
 function writeHiddenCourses(deps: CliDeps, result: unknown): void {
-  if (!Array.isArray(result) && !isAllCoursesAssignments(result)) return;
+  if (!Array.isArray(result) && !isAllCoursesAssignments(result) && !isFilteredAnnouncements(result)) return;
   const { hiddenCourseIds, hiddenBy, notice } = result as { hiddenCourseIds?: number[]; hiddenBy?: string[]; notice?: string };
   if (hiddenCourseIds && hiddenCourseIds.length > 0) {
     deps.stderr.write(`${JSON.stringify({ hiddenCourseIds, hiddenBy, notice })}\n`);
@@ -332,6 +334,11 @@ function writeHiddenCourses(deps: CliDeps, result: unknown): void {
 /** The all-courses `getAssignments` result: an object with a `courses` array. */
 function isAllCoursesAssignments(result: unknown): boolean {
   return typeof result === "object" && result !== null && Array.isArray((result as { courses?: unknown }).courses);
+}
+
+/** The `getAnnouncements` result with `--since`: an object with an `announcements` array. */
+function isFilteredAnnouncements(result: unknown): boolean {
+  return typeof result === "object" && result !== null && Array.isArray((result as { announcements?: unknown }).announcements);
 }
 
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
