@@ -52,6 +52,17 @@ All notable changes to `brightspace-api` are documented here. Format follows
   answering 403 (those stay in `unreadCourses`), are not counted. Fixes
   [#129](https://github.com/RohanMuppa/Brightspace-API/issues/129); port of
   [brightspace-mcp-server#490](https://github.com/RohanMuppa/brightspace-mcp-server/issues/490).
+- `getUpcomingDueDates` (and `brightspace due`) without a course id no longer drops courses hidden
+  by `D2L_INCLUDE_COURSES` or `D2L_EXCLUDE_COURSES` without saying so; their due dates were never
+  read, yet a missing course read as one with nothing due. The result is still an `UpcomingItem[]`
+  (`UpcomingDueDates`) with `failedCourses` as before, and when those settings hid any enrolled
+  course it adds `hiddenCourseIds`, `hiddenBy` and a `notice` that
+  `getUpcomingDueDates({ courseId })` still reads them (properties on the array, like
+  `failedCourses`). The CLI keeps stdout a bare array and adds the same stderr JSON line as
+  `brightspace courses`, after any `failedCourses` line. Courses dropped by `activeOnly`, courses
+  answering 403 (still skipped) and failed courses (still in `failedCourses`) are not counted.
+  Fixes [#131](https://github.com/RohanMuppa/Brightspace-API/issues/131); port of
+  [brightspace-mcp-server#492](https://github.com/RohanMuppa/brightspace-mcp-server/issues/492).
 
 ### Added
 

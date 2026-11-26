@@ -321,7 +321,8 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
  * already on stdout; they are written to stderr too, so every command reports
  * hidden courses on the same stderr line (#126). `getAnnouncements` puts them on
  * the array without `--since` and in the stdout object with it; both forms get
- * the stderr line too (#129).
+ * the stderr line too (#129). `getUpcomingDueDates` puts them on the array, so
+ * `brightspace due` gets the line after any `failedCourses` one (#131).
  */
 function writeHiddenCourses(deps: CliDeps, result: unknown): void {
   if (!Array.isArray(result) && !isAllCoursesAssignments(result) && !isFilteredAnnouncements(result)) return;

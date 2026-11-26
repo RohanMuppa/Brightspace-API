@@ -104,6 +104,37 @@ describe("brightspace CLI argv parsing", () => {
     expect(stderr).toEqual([`${JSON.stringify({ failedCourses: [failure] })}\n`]);
   });
 
+  it("due keeps stdout a bare array and writes settings-hidden courses to stderr", async () => {
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_EXCLUDE_COURSES), so their due dates were not read: 8.";
+    const items = Object.assign([{ id: 1 }], { hiddenCourseIds: [8], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice });
+    const getUpcomingDueDates = vi.fn(async () => items as never);
+    const { deps, stdout, stderr } = makeDeps({ getUpcomingDueDates });
+
+    expect(await main(["due"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([{ id: 1 }])}\n`);
+    expect(stderr).toEqual([`${JSON.stringify({ hiddenCourseIds: [8], hiddenBy: ["D2L_EXCLUDE_COURSES"], notice })}\n`]);
+  });
+
+  it("due writes failedCourses and settings-hidden courses as two stderr lines", async () => {
+    const failure = { courseId: 202, courseName: "MA 261", sources: ["quizzes"], code: "BRIGHTSPACE_API_ERROR", status: 500, notice: "n" };
+    const notice = "1 enrolled course is hidden by this client's course settings (D2L_INCLUDE_COURSES), so their due dates were not read: 8.";
+    const items = Object.assign([{ id: 1 }], {
+      failedCourses: [failure],
+      hiddenCourseIds: [8],
+      hiddenBy: ["D2L_INCLUDE_COURSES"],
+      notice,
+    });
+    const getUpcomingDueDates = vi.fn(async () => items as never);
+    const { deps, stdout, stderr } = makeDeps({ getUpcomingDueDates });
+
+    expect(await main(["due"], deps)).toBe(0);
+    expect(stdout.join("")).toBe(`${JSON.stringify([{ id: 1 }])}\n`);
+    expect(stderr).toEqual([
+      `${JSON.stringify({ failedCourses: [failure] })}\n`,
+      `${JSON.stringify({ hiddenCourseIds: [8], hiddenBy: ["D2L_INCLUDE_COURSES"], notice })}\n`,
+    ]);
+  });
+
   it("due writes nothing to stderr when no course failed", async () => {
     const getUpcomingDueDates = vi.fn(async () => [{ id: 1 }] as never);
     const { deps, stderr } = makeDeps({ getUpcomingDueDates });

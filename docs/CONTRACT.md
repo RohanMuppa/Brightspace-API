@@ -53,7 +53,7 @@ Each `src/features/<name>.ts` exports exactly:
 |---|---|---|---|
 | `courses.ts` | `getMyCourses(ctx, args?)` | `GetMyCoursesArgs` | `MyCoursesResult` (`Course[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `MyGradesResult` (`CourseGrades[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
-| `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingItem[]` |
+| `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingDueDates` (`UpcomingItem[]` + optional `failedCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `info.ts` | `getInfo(ctx)` | — | `ClientInfo` |
 | `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` (all-courses form + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `assignment-files.ts` | `getAssignmentFiles(ctx, args)` | `GetAssignmentFilesArgs` | `AssignmentFilesResult` |
@@ -140,7 +140,7 @@ export class BrightspaceClient {
   readonly config: AppConfig;
   readonly api: D2LApiClient;                 // escape hatch, documented as such
   getMyCourses(args?): Promise<MyCoursesResult>;  // Course[] + optional hiddenCourseIds, hiddenBy, notice
-  getUpcomingDueDates(args?): Promise<UpcomingItem[]>;
+  getUpcomingDueDates(args?): Promise<UpcomingDueDates>;  // UpcomingItem[] + optional failedCourses, hiddenCourseIds, hiddenBy, notice
   getMyGrades(args?): Promise<MyGradesResult>;   // CourseGrades[] + optional hiddenCourseIds, hiddenBy, notice
   getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;

@@ -186,7 +186,8 @@ and `brightspace grades` print the shown ones on stdout and add
 `{"hiddenCourseIds":[…],"hiddenBy":[…],"notice":"…"}` to stderr. `brightspace assignments`
 prints its usual object on stdout (which then carries those fields) and adds the same stderr line.
 `brightspace announcements` does the same: the shown announcements on stdout (with `--since`, its
-usual object, which then carries those fields) and the same stderr line.
+usual object, which then carries those fields) and the same stderr line. `brightspace due` prints
+the shown courses' items on stdout and the same stderr line (after any `failedCourses` line).
 
 Exit codes: `2` for `BRIGHTSPACE_AUTH_EXPIRED`, `3` for `BRIGHTSPACE_MFA_PENDING`, `4` for
 `BRIGHTSPACE_INVALID_ARGUMENT`, `1` for anything else. Add `--login` to any command to switch
@@ -204,7 +205,7 @@ All methods live on the object `createBrightspaceClient()` resolves to. Every me
 | Method | Args | Result |
 |---|---|---|
 | `getMyCourses(args?)` | `GetMyCoursesArgs` — `activeOnly?: boolean` | `MyCoursesResult` (`Course[]` with optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
-| `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with an optional `failedCourses`) |
+| `getUpcomingDueDates(args?)` | `GetUpcomingDueDatesArgs` — `daysAhead?: number` (default 7), `courseId?: number` | `UpcomingDueDates` (`UpcomingItem[]` with optional `failedCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getMyGrades(args?)` | `GetMyGradesArgs` — `courseId?: number` | `MyGradesResult` (`CourseGrades[]` with optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getAssignments(args?)` | `GetAssignmentsArgs` — `courseId?: number` | `AssignmentsResult` (optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `getAssignmentFiles(args)` | `GetAssignmentFilesArgs` — `courseId`, `folderId?`, `fileId?`, `extractText?` (default true), `maxChars?` (default 12000) | `AssignmentFilesResult` |
@@ -239,6 +240,13 @@ applies with `courseId` too: an empty array with `failedCourses` set is a failed
 empty course. `failedCourses` is absent when every course was read. A 403 is still skipped
 quietly, and a sign-in problem throws, as in `getAssignments`. Array methods such as `filter` and
 `JSON.stringify` do not carry the property along, so read it from the value the call returned.
+When the include/exclude course lists left out enrolled courses, the all-courses form never read
+their due dates, so the array also carries `hiddenCourseIds`, `hiddenBy` and a `notice` sentence
+about them, as `getMyCourses` does. Each `failedCourses` entry keeps its own `notice`; a course
+that failed stays there and one that answered 403 is still skipped, and neither is counted as
+hidden. `getUpcomingDueDates({ courseId })` skips the course filter, so it does read a hidden
+course. Courses left out by `activeOnly` are not counted. (Fixes #131, port of
+brightspace-mcp-server#492.)
 
 `getAssignments` marks reads that failed instead of showing them empty. A dropbox assignment whose
 feedback could not be read (a 403, a 5xx, a network error; a 404 just means no feedback yet) has a

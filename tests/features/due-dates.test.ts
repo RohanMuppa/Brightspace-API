@@ -646,3 +646,127 @@ describe("getUpcomingDueDates failed courses", () => {
     await expect(getUpcomingDueDates(ctx, { daysAhead: 7 })).rejects.toBe(error);
   });
 });
+
+/**
+ * A course the include/exclude settings hid was never asked for its
+ * deadlines, and the caller may never have seen those settings, so it must not
+ * read as a course with nothing due (#131, port of brightspace-mcp-server#492).
+ */
+describe("getUpcomingDueDates reports courses hidden by course settings (#131)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function configWith(filter: Partial<AppConfig["courseFilter"]>): AppConfig {
+    const config = makeConfig();
+    config.courseFilter = { ...config.courseFilter, ...filter };
+    return config;
+  }
+
+  const hwFor = (course: typeof COURSE_A) => [{ Id: course.Id, Name: `HW ${course.Name}`, DueDate: daysFromNow(1), IsHidden: false }];
+
+  const respond = (active = true): Responder => (path) => {
+    if (path.includes("/enrollments/")) {
+      const items = enrollments(COURSE_A, COURSE_B).Items;
+      for (const item of items) item.Access.IsActive = active;
+      return { Items: items };
+    }
+    if (path.includes(`/${COURSE_A.Id}/dropbox/`)) return hwFor(COURSE_A);
+    if (path.includes(`/${COURSE_B.Id}/dropbox/`)) return hwFor(COURSE_B);
+    return [];
+  };
+
+  it("names the course D2L_EXCLUDE_COURSES hid on the array, which keeps its shape", async () => {
+    const { ctx, requested } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(Array.isArray(items)).toBe(true);
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id]);
+    expect(JSON.parse(JSON.stringify(items))).toHaveLength(1);
+    expect(requested.some((p) => p.includes(`/${COURSE_B.Id}/`))).toBe(false);
+    expect(items.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(items.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(items.notice).toContain("1 enrolled course is hidden");
+    expect(items.notice).toContain(`due dates were not read: ${COURSE_B.Id}.`);
+    expect(items.notice).toContain("getUpcomingDueDates again with that courseId");
+    expect(items).not.toHaveProperty("failedCourses");
+  });
+
+  it("names D2L_INCLUDE_COURSES when it hides courses", async () => {
+    const { ctx } = setup(respond(), configWith({ includeCourseIds: [COURSE_A.Id] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id]);
+    expect(items.hiddenCourseIds).toEqual([COURSE_B.Id]);
+    expect(items.hiddenBy).toEqual(["D2L_INCLUDE_COURSES"]);
+  });
+
+  it("does not count courses that activeOnly removed", async () => {
+    // activeOnly:true drops both inactive courses; the exclude list names one
+    // of them, but it hid nothing activeOnly had not already removed.
+    const { ctx } = setup(respond(false), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect([...items]).toEqual([]);
+    expect(items).not.toHaveProperty("hiddenCourseIds");
+    expect(items).not.toHaveProperty("notice");
+  });
+
+  it("adds nothing when a setting is on but hides no enrolled course", async () => {
+    const { ctx } = setup(respond(), configWith({ excludeCourseIds: [999] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id, COURSE_B.Id]);
+    expect(items).not.toHaveProperty("hiddenCourseIds");
+    expect(items).not.toHaveProperty("hiddenBy");
+    expect(items).not.toHaveProperty("notice");
+  });
+
+  it("does not count a course that answered 403 or failed as hidden", async () => {
+    const extra = { Id: 303, Name: "PHYS 172", Code: "phys172" };
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B, extra);
+      if (path.includes(`/${COURSE_B.Id}/`)) throw forbidden();
+      if (path.includes(`/${extra.Id}/`)) throw new ApiError(500, "/dropbox", "boom");
+      if (path.includes(`/${COURSE_A.Id}/dropbox/`)) return hwFor(COURSE_A);
+      return [];
+    }, configWith({ excludeCourseIds: [999] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id]);
+    expect(items.failedCourses?.map((f) => f.courseId)).toEqual([extra.Id]);
+    expect(items).not.toHaveProperty("hiddenCourseIds");
+    expect(items).not.toHaveProperty("notice");
+  });
+
+  it("keeps failedCourses alongside the hidden courses", async () => {
+    const extra = { Id: 303, Name: "PHYS 172", Code: "phys172" };
+    const { ctx } = setup((path) => {
+      if (path.includes("/enrollments/")) return enrollments(COURSE_A, COURSE_B, extra);
+      if (path.includes(`/${COURSE_B.Id}/`)) throw new ApiError(500, "/dropbox", "boom");
+      if (path.includes(`/${COURSE_A.Id}/dropbox/`)) return hwFor(COURSE_A);
+      return [];
+    }, configWith({ excludeCourseIds: [extra.Id] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7 });
+    expect(items.map((i) => i.courseId)).toEqual([COURSE_A.Id]);
+    expect(items.failedCourses?.map((f) => f.courseId)).toEqual([COURSE_B.Id]);
+    expect(items.hiddenCourseIds).toEqual([extra.Id]);
+    expect(items.notice).toContain(`due dates were not read: ${extra.Id}.`);
+  });
+
+  it("still reads a hidden course's due dates when given its courseId", async () => {
+    const { ctx, requested } = setup(respond(), configWith({ excludeCourseIds: [COURSE_B.Id] }));
+
+    const items = await getUpcomingDueDates(ctx, { daysAhead: 7, courseId: COURSE_B.Id });
+    expect(items.map((i) => i.title)).toEqual(["HW MA 261"]);
+    expect(requested.some((p) => p.includes(`/${COURSE_B.Id}/dropbox/`))).toBe(true);
+    expect(items).not.toHaveProperty("hiddenCourseIds");
+    expect(items).not.toHaveProperty("notice");
+  });
+});
