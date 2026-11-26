@@ -16,7 +16,7 @@ import { toPublicError } from "../errors.js";
 import type { AppConfig, LogLevel } from "../types/index.js";
 import type { FeatureContext } from "../features/context.js";
 import { getMyCourses } from "../features/courses.js";
-import { getMyGrades, type GetMyGradesArgs, type CourseGrades } from "../features/grades.js";
+import { getMyGrades, type GetMyGradesArgs, type MyGradesResult } from "../features/grades.js";
 import { getUpcomingDueDates, type GetUpcomingDueDatesArgs, type UpcomingDueDates } from "../features/due-dates.js";
 import { getInfo, type ClientInfo } from "../features/info.js";
 import { getAssignments, type GetAssignmentsArgs, type AssignmentsResult } from "../features/assignments.js";
@@ -32,7 +32,7 @@ import { getCourseContent, type GetCourseContentArgs, type CourseContentResult }
 import { getSyllabus, type GetSyllabusArgs, type SyllabusResult } from "../features/syllabus.js";
 import { downloadCourseFiles, type DownloadCourseFilesArgs } from "../features/download-course-files.js";
 import type { SyncResult } from "../sync/course-sync.js";
-import type { Course, GetMyCoursesArgs } from "../features/courses.js";
+import type { GetMyCoursesArgs, MyCoursesResult } from "../features/courses.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_VERSION = (() => {
@@ -141,7 +141,7 @@ export class BrightspaceClient {
     }
   }
 
-  getMyCourses(args?: GetMyCoursesArgs): Promise<Course[]> {
+  getMyCourses(args?: GetMyCoursesArgs): Promise<MyCoursesResult> {
     return this.run(getMyCourses, args);
   }
 
@@ -149,7 +149,7 @@ export class BrightspaceClient {
     return this.run(getUpcomingDueDates, args);
   }
 
-  getMyGrades(args?: GetMyGradesArgs): Promise<CourseGrades[]> {
+  getMyGrades(args?: GetMyGradesArgs): Promise<MyGradesResult> {
     return this.run(getMyGrades, args);
   }
 

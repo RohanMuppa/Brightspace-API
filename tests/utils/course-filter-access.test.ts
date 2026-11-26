@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyCourseFilter } from "../../src/utils/course-filter.js";
+import { applyCourseFilter, coursesHiddenBySettings } from "../../src/utils/course-filter.js";
 import type { CourseFilterConfig } from "../../src/types/index.js";
 
 /**
@@ -83,5 +83,55 @@ describe("closed courses", () => {
 
     expect(courses).toHaveLength(44);
     expect(applyCourseFilter(courses, config())).toHaveLength(13);
+  });
+});
+
+/**
+ * getMyCourses and getMyGrades both report the enrolled courses that the
+ * include/exclude settings hid, and only those (#124).
+ */
+describe("coursesHiddenBySettings", () => {
+  const enrolled = [course(1, true, true), course(2, true, true), course(3, false), course(4, true, false)];
+  const hidden = (filter: Partial<CourseFilterConfig>) => {
+    const cfg = config(filter);
+    return coursesHiddenBySettings(enrolled, applyCourseFilter(enrolled, cfg), cfg);
+  };
+
+  it("returns null when no include/exclude setting is on", () => {
+    expect(hidden({})).toBeNull();
+    expect(hidden({ activeOnly: false })).toBeNull();
+    expect(hidden({ includeCourseIds: [], excludeCourseIds: [] })).toBeNull();
+  });
+
+  it("names the courses the exclude list removed", () => {
+    expect(hidden({ excludeCourseIds: [2] })).toEqual({ ids: [2], by: ["D2L_EXCLUDE_COURSES"] });
+  });
+
+  it("names the courses the include list removed", () => {
+    expect(hidden({ includeCourseIds: [1] })).toEqual({ ids: [2], by: ["D2L_INCLUDE_COURSES"] });
+  });
+
+  it("lists both settings when both are on", () => {
+    expect(hidden({ includeCourseIds: [1, 2], excludeCourseIds: [1] })).toEqual({
+      ids: [1],
+      by: ["D2L_INCLUDE_COURSES", "D2L_EXCLUDE_COURSES"],
+    });
+  });
+
+  it("does not count courses activeOnly removed", () => {
+    // 3 is inactive and 4 is closed: activeOnly drops them before the lists do.
+    expect(hidden({ excludeCourseIds: [3, 4] })).toBeNull();
+    expect(hidden({ includeCourseIds: [1, 2] })).toBeNull();
+  });
+
+  it("counts inactive courses once activeOnly is off", () => {
+    expect(hidden({ activeOnly: false, excludeCourseIds: [3, 4] })).toEqual({
+      ids: [3, 4],
+      by: ["D2L_EXCLUDE_COURSES"],
+    });
+  });
+
+  it("returns null when a setting is on but removed nothing", () => {
+    expect(hidden({ excludeCourseIds: [99] })).toBeNull();
   });
 });

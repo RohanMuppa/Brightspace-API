@@ -11,7 +11,12 @@ import { fetchAllItems, fetchAllObjects } from "../api/paginate.js";
 import { toPublicError, type BrightspaceErrorCode } from "../errors.js";
 import { GetUpcomingDueDatesSchema } from "./schemas.js";
 import type { FeatureContext } from "./context.js";
-import { applyCourseFilter } from "../utils/course-filter.js";
+import {
+  applyCourseFilter,
+  coursesHiddenBySettings,
+  type CourseFilterSetting,
+  type SettingsHiddenCourses,
+} from "../utils/course-filter.js";
 import { assignmentUrl, quizUrl, discussionUrl } from "../utils/deep-links.js";
 import { log } from "../utils/logger.js";
 import type { AppConfig } from "../types/index.js";
@@ -54,10 +59,27 @@ export interface UpcomingDueDatesFailure {
 /**
  * What `getUpcomingDueDates` returns: the usual `UpcomingItem[]`, plus a
  * `failedCourses` property that is present only when at least one course's
- * due dates could not be read. It is a property on the array, not an element,
- * so iterating, `.length`, and `JSON.stringify` see exactly the items.
+ * due dates could not be read, and `hiddenCourseIds`, `hiddenBy` and `notice`
+ * properties that are present only when, without `courseId`, the course
+ * settings hid an enrolled course. They are properties on the array, not
+ * elements, so iterating, `.length`, and `JSON.stringify` see exactly the
+ * items.
  */
-export type UpcomingDueDates = UpcomingItem[] & { failedCourses?: UpcomingDueDatesFailure[] };
+export type UpcomingDueDates = UpcomingItem[] & {
+  failedCourses?: UpcomingDueDatesFailure[];
+  /**
+   * Ids of enrolled courses the include/exclude course settings left out,
+   * so their due dates were not read. Present only when they hid one.
+   */
+  hiddenCourseIds?: number[];
+  /** Which of those settings hid them; present only with `hiddenCourseIds`. */
+  hiddenBy?: CourseFilterSetting[];
+  /**
+   * A sentence naming the hidden courses; present only with
+   * `hiddenCourseIds`. Each entry of `failedCourses` carries its own notice.
+   */
+  notice?: string;
+};
 
 interface DropboxFolder {
   Id: number;
@@ -112,13 +134,24 @@ function unwrapList<T>(raw: unknown): T[] {
   return Array.isArray(raw) ? (raw as T[]) : ((raw as any)?.Objects ?? []);
 }
 
+interface ResolvedCourses {
+  courses: CourseRef[];
+  /**
+   * Enrolled courses that D2L_INCLUDE_COURSES or D2L_EXCLUDE_COURSES left
+   * out, or null when they left out none. Always null for an explicit
+   * courseId, which bypasses those settings.
+   */
+  hidden: SettingsHiddenCourses | null;
+}
+
 /**
- * Resolve which courses to query, and their names.
+ * Resolve which courses to query, and their names, plus which enrolled
+ * courses the course settings hid.
  *
  * An explicit courseId bypasses the configured course filter, but enrollments
  * are still fetched so the course can be named.
  */
-async function resolveCourses(api: D2LApiClient, config: AppConfig, courseId?: number): Promise<CourseRef[]> {
+async function resolveCourses(api: D2LApiClient, config: AppConfig, courseId?: number): Promise<ResolvedCourses> {
   let items: EnrollmentItem[] = [];
 
   try {
@@ -142,21 +175,22 @@ async function resolveCourses(api: D2LApiClient, config: AppConfig, courseId?: n
 
   if (courseId) {
     const match = items.find((item) => item.OrgUnit.Id === courseId);
-    return [{ id: courseId, name: match?.OrgUnit.Name ?? null }];
+    return { courses: [{ id: courseId, name: match?.OrgUnit.Name ?? null }], hidden: null };
   }
 
-  const filtered = applyCourseFilter(
-    items.map((item) => ({
-      id: item.OrgUnit.Id,
-      name: item.OrgUnit.Name,
-      code: item.OrgUnit.Code,
-      isActive: item.Access.IsActive,
-      canAccess: item.Access.CanAccess,
-    })),
-    config.courseFilter,
-  );
+  const enrolled = items.map((item) => ({
+    id: item.OrgUnit.Id,
+    name: item.OrgUnit.Name,
+    code: item.OrgUnit.Code,
+    isActive: item.Access.IsActive,
+    canAccess: item.Access.CanAccess,
+  }));
+  const filtered = applyCourseFilter(enrolled, config.courseFilter);
 
-  return filtered.map((course) => ({ id: course.id, name: course.name }));
+  return {
+    courses: filtered.map((course) => ({ id: course.id, name: course.name })),
+    hidden: coursesHiddenBySettings(enrolled, filtered, config.courseFilter),
+  };
 }
 
 /**
@@ -352,6 +386,8 @@ async function fetchCourseDueItems(api: D2LApiClient, baseUrl: string, course: C
  *
  * A course whose due dates could not be read (anything but a 403) is named in
  * the array's `failedCourses` property; a sign-in problem fails the call.
+ * Without `courseId`, enrolled courses the include/exclude course settings
+ * hid are named in `hiddenCourseIds`, `hiddenBy` and `notice`.
  */
 export async function getUpcomingDueDates(
   ctx: FeatureContext,
@@ -362,7 +398,7 @@ export async function getUpcomingDueDates(
   const now = Date.now();
   const windowEnd = now + daysAhead * 24 * 60 * 60 * 1000;
 
-  const courses = await resolveCourses(ctx.api, ctx.config, courseId);
+  const { courses, hidden } = await resolveCourses(ctx.api, ctx.config, courseId);
   log("DEBUG", `getUpcomingDueDates: querying ${courses.length} course(s), window=${daysAhead} days`);
 
   // Fetch every course in parallel; the API client rate limits itself
@@ -400,9 +436,27 @@ export async function getUpcomingDueDates(
   log(
     "INFO",
     `getUpcomingDueDates: Retrieved ${upcoming.length} items across ${courses.length} courses` +
-      (failedCourses.length > 0 ? ` (${failedCourses.length} failed)` : ""),
+      (failedCourses.length > 0 ? ` (${failedCourses.length} failed)` : "") +
+      (hidden ? ` (${hidden.ids.length} hidden by settings)` : ""),
   );
   // Only when something failed, so the usual result is a plain array.
   if (failedCourses.length > 0) upcoming.failedCourses = failedCourses;
+  // A course the include/exclude settings hid was never asked for its
+  // deadlines. The caller may never have seen those settings, so say which
+  // courses they hid rather than let one read as a course with nothing due or
+  // one the user is not in (#131, port of brightspace-mcp-server#492). The
+  // courseId form skips the filter, so it does read a hidden course. A course
+  // that answered 403 is skipped as before and a failed one stays in
+  // failedCourses; neither is counted here.
+  if (hidden) {
+    const are = hidden.ids.length === 1 ? "course is" : "courses are";
+    upcoming.hiddenCourseIds = hidden.ids;
+    upcoming.hiddenBy = hidden.by;
+    upcoming.notice =
+      `${hidden.ids.length} enrolled ${are} hidden by this client's course settings ` +
+      `(${hidden.by.join(", ")}), so their due dates were not read: ${hidden.ids.join(", ")}. Do not ` +
+      "read those courses as having nothing due or as ones the user is not enrolled in: call " +
+      "getUpcomingDueDates again with that courseId, which reads a hidden course.";
+  }
   return upcoming;
 }

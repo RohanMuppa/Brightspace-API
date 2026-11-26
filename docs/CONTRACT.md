@@ -51,14 +51,14 @@ Each `src/features/<name>.ts` exports exactly:
 
 | Module | Function | Args type (`z.input` of the schema) | Result type |
 |---|---|---|---|
-| `courses.ts` | `getMyCourses(ctx, args?)` | `GetMyCoursesArgs` | `Course[]` |
-| `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `CourseGrades[]` |
-| `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingItem[]` |
+| `courses.ts` | `getMyCourses(ctx, args?)` | `GetMyCoursesArgs` | `MyCoursesResult` (`Course[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
+| `grades.ts` | `getMyGrades(ctx, args?)` | `GetMyGradesArgs` | `MyGradesResult` (`CourseGrades[]` + optional `hiddenCourseIds`, `hiddenBy`, `notice`) |
+| `due-dates.ts` | `getUpcomingDueDates(ctx, args?)` | `GetUpcomingDueDatesArgs` | `UpcomingDueDates` (`UpcomingItem[]` + optional `failedCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `info.ts` | `getInfo(ctx)` | — | `ClientInfo` |
-| `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` |
+| `assignments.ts` | `getAssignments(ctx, args?)` | `GetAssignmentsArgs` | `AssignmentsResult` (all-courses form + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `assignment-files.ts` | `getAssignmentFiles(ctx, args)` | `GetAssignmentFilesArgs` | `AssignmentFilesResult` |
 | `download.ts` | `downloadFile(ctx, args)` | `DownloadFileArgs` | `DownloadResult` |
-| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `notice`) |
+| `announcements.ts` | `getAnnouncements(ctx, args?)` | `GetAnnouncementsArgs` | `AnnouncementsList \| AnnouncementsFiltered` (`Announcement[]` + optional `unreadCourses`, `hiddenCourseIds`, `hiddenBy`, `notice`) |
 | `announcement-files.ts` | `getAnnouncementFiles(ctx, args)` | `GetAnnouncementFilesArgs` | `AnnouncementFilesResult` |
 | `content.ts` | `getCourseContent(ctx, args)` | `GetCourseContentArgs` | `CourseContentResult` |
 | `syllabus.ts` | `getSyllabus(ctx, args)` | `GetSyllabusArgs` | `SyllabusResult` |
@@ -139,12 +139,12 @@ export function createBrightspaceClient(options?: BrightspaceClientOptions): Pro
 export class BrightspaceClient {
   readonly config: AppConfig;
   readonly api: D2LApiClient;                 // escape hatch, documented as such
-  getMyCourses(args?): Promise<Course[]>;
-  getUpcomingDueDates(args?): Promise<UpcomingItem[]>;
-  getMyGrades(args?): Promise<CourseGrades[]>;
-  getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;
+  getMyCourses(args?): Promise<MyCoursesResult>;  // Course[] + optional hiddenCourseIds, hiddenBy, notice
+  getUpcomingDueDates(args?): Promise<UpcomingDueDates>;  // UpcomingItem[] + optional failedCourses, hiddenCourseIds, hiddenBy, notice
+  getMyGrades(args?): Promise<MyGradesResult>;   // CourseGrades[] + optional hiddenCourseIds, hiddenBy, notice
+  getAnnouncements(args?): Promise<AnnouncementsList | AnnouncementsFiltered>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAnnouncementFiles(args): Promise<AnnouncementFilesResult>;
-  getAssignments(args?): Promise<AssignmentsResult>;
+  getAssignments(args?): Promise<AssignmentsResult>;  // all-courses form + optional unreadCourses, hiddenCourseIds, hiddenBy, notice
   getAssignmentFiles(args): Promise<AssignmentFilesResult>;
   getCourseContent(args): Promise<CourseContentResult>;
   downloadFile(args): Promise<DownloadResult>;

@@ -311,6 +311,37 @@ function writeUnreadCourses(deps: CliDeps, result: unknown): void {
   }
 }
 
+/**
+ * `getMyCourses` and `getMyGrades` name enrolled courses that
+ * D2L_INCLUDE_COURSES or D2L_EXCLUDE_COURSES hid in `hiddenCourseIds`, `hiddenBy` and `notice`
+ * properties on the array, which JSON.stringify drops. As with
+ * `failedCourses`, stdout stays the bare array and they go to stderr as one
+ * JSON line, so a hidden course is never read as one the user is not in.
+ * `getAssignments` without `--course` returns an object, so the same fields are
+ * already on stdout; they are written to stderr too, so every command reports
+ * hidden courses on the same stderr line (#126). `getAnnouncements` puts them on
+ * the array without `--since` and in the stdout object with it; both forms get
+ * the stderr line too (#129). `getUpcomingDueDates` puts them on the array, so
+ * `brightspace due` gets the line after any `failedCourses` one (#131).
+ */
+function writeHiddenCourses(deps: CliDeps, result: unknown): void {
+  if (!Array.isArray(result) && !isAllCoursesAssignments(result) && !isFilteredAnnouncements(result)) return;
+  const { hiddenCourseIds, hiddenBy, notice } = result as { hiddenCourseIds?: number[]; hiddenBy?: string[]; notice?: string };
+  if (hiddenCourseIds && hiddenCourseIds.length > 0) {
+    deps.stderr.write(`${JSON.stringify({ hiddenCourseIds, hiddenBy, notice })}\n`);
+  }
+}
+
+/** The all-courses `getAssignments` result: an object with a `courses` array. */
+function isAllCoursesAssignments(result: unknown): boolean {
+  return typeof result === "object" && result !== null && Array.isArray((result as { courses?: unknown }).courses);
+}
+
+/** The `getAnnouncements` result with `--since`: an object with an `announcements` array. */
+function isFilteredAnnouncements(result: unknown): boolean {
+  return typeof result === "object" && result !== null && Array.isArray((result as { announcements?: unknown }).announcements);
+}
+
 export async function main(argv: string[], deps: CliDeps): Promise<number | null> {
   const [name, ...rest] = argv;
 
@@ -381,6 +412,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number | null
     writeFailedCourses(deps, result);
     writeHiddenEmails(deps, result);
     writeUnreadCourses(deps, result);
+    writeHiddenCourses(deps, result);
     return 0;
   } catch (e) {
     return writeError(deps, toPublicError(e));

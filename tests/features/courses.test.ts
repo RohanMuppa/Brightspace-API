@@ -122,3 +122,67 @@ describe("getMyCourses pagination", () => {
     expect(requested[1]).toContain("bookmark=b1");
   });
 });
+
+/**
+ * The caller may never have seen the include/exclude course settings, so a
+ * course they hide must not read as one the user is not enrolled in.
+ * Port of brightspace-mcp-server#484.
+ */
+describe("getMyCourses reports courses hidden by course settings", () => {
+  function configWith(filter: Partial<AppConfig["courseFilter"]>): AppConfig {
+    const config = makeConfig(true);
+    config.courseFilter = { ...config.courseFilter, ...filter };
+    return config;
+  }
+
+  it("names the courses D2L_EXCLUDE_COURSES hid, keeping the array to the shown courses", async () => {
+    const { ctx } = setup(configWith({ excludeCourseIds: [15853] }));
+
+    const result = await getMyCourses(ctx, { activeOnly: false });
+
+    expect(idsOf(result)).toEqual([319544]);
+    expect(result.hiddenCourseIds).toEqual([15853]);
+    expect(result.hiddenBy).toEqual(["D2L_EXCLUDE_COURSES"]);
+    expect(result.notice).toContain("1 enrolled course is hidden");
+    expect(result.notice).toContain("D2L_EXCLUDE_COURSES");
+    expect(result.notice).toContain(": 15853.");
+    expect(result.notice).toContain("courseId");
+    expect(JSON.parse(JSON.stringify(result))).toHaveLength(1);
+  });
+
+  it("names D2L_INCLUDE_COURSES when it hides courses", async () => {
+    const { ctx } = setup(configWith({ includeCourseIds: [319544] }));
+
+    const result = await getMyCourses(ctx, { activeOnly: false });
+
+    expect(idsOf(result)).toEqual([319544]);
+    expect(result.hiddenCourseIds).toEqual([15853]);
+    expect(result.hiddenBy).toEqual(["D2L_INCLUDE_COURSES"]);
+  });
+
+  it("does not count a course that activeOnly removed", async () => {
+    const { ctx } = setup(configWith({ excludeCourseIds: [15853] }));
+
+    const result = await getMyCourses(ctx, { activeOnly: true });
+
+    expect(idsOf(result)).toEqual([]);
+    expect(result.hiddenCourseIds).toEqual([15853]);
+    expect(result.notice).toContain("not listed: 15853.");
+
+    const plain = await getMyCourses(setup(makeConfig(true)).ctx);
+    expect(idsOf(plain)).toEqual([15853]);
+    expect(plain.hiddenCourseIds).toBeUndefined();
+    expect(plain.notice).toBeUndefined();
+  });
+
+  it("adds nothing when a setting is on but hides no enrolled course", async () => {
+    const { ctx } = setup(configWith({ excludeCourseIds: [999] }));
+
+    const result = await getMyCourses(ctx, { activeOnly: false });
+
+    expect(idsOf(result)).toEqual([15853, 319544]);
+    expect(result.hiddenCourseIds).toBeUndefined();
+    expect(result.hiddenBy).toBeUndefined();
+    expect(result.notice).toBeUndefined();
+  });
+});
